@@ -1,0 +1,19 @@
+schema: phoxal/robot/v0
+robot:
+  id: contract-robot
+services:
+  consumer:
+    source: { path: ../consumer }
+  encoder_source:
+    source: { path: ../encoder-a }
+  backup_source:
+    source: { path: ../encoder-b }
+connections:
+  brain.inspect: consumer.inspect
+  consumer.encoder: encoder_source.encoder
+  consumer.ticks: encoder_source.ticks
+  consumer.read_encoder: encoder_source.read_encoder
+  consumer.read_backup: backup_source.measure_encoder
+
+supervisor:
+  source: { path: ../../.. }

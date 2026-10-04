@@ -1,0 +1,78 @@
+
+[package]
+name = "phoxal-supervisor"
+version = "0.0.0-dev.8"
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-only"
+publish = ["phoxal"]
+description = "The Phoxal Framework execution supervisor."
+documentation = "https://github.com/phoxal/supervisor#readme"
+homepage = "https://github.com/phoxal/supervisor"
+repository = "https://github.com/phoxal/supervisor"
+
+[[bin]]
+name = "phoxal-supervisor"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { "version" = "=0.0.0-dev.8", "registry" = "phoxal", "default-features" = false, "features" = ["runtime", "scenario", "session"] }
+anyhow = { "version" = "1.0.102" }
+getrandom = { "version" = "0.3.4" }
+clap = { "version" = "4.6.1", "features" = ["derive", "env"] }
+ctrlc = { "version" = "3.5.2", "features" = ["termination"] }
+libc = { "version" = "0.2.180" }
+prost = { "version" = "0.14.4" }
+serde = { "version" = "1.0.228", "features" = ["derive"] }
+serde_json = { "version" = "1.0.149" }
+serde_yaml = { "version" = "0.9" }
+sha2 = { "version" = "0.10.9" }
+tempfile = { "version" = "3.27.0" }
+thiserror = { "version" = "2.0.18" }
+tokio = { "version" = "1", "features" = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs", "process", "full"] }
+tokio-util = { "version" = "0.7", "default-features" = false, "features" = ["rt"] }
+tracing = { "version" = "0.1.44" }
+tracing-subscriber = { "version" = "0.3.23", "features" = ["env-filter"] }
+zenoh = { "version" = "=1.9.0", "default-features" = false, "features" = ["auth_pubkey", "auth_usrpwd", "transport_multilink", "transport_quic", "transport_quic_datagram", "transport_tcp", "transport_tls", "transport_udp", "transport_unixsock-stream", "transport_ws", "unstable"] }
+
+[dev-dependencies]
+serial_test = { "version" = "3" }
+
+[lints]
+
+[lints.rust]
+unused = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+[features]
+host-acceptance = []
+
+[[test]]
+name = "runtime_process"
+path = "tests/runtime_process.rs"
+required-features = ["host-acceptance"]
+
+[[test]]
+name = "public_session"
+path = "tests/public_session.rs"
+required-features = ["host-acceptance"]
+
+[[test]]
+name = "countdown_process"
+path = "tests/countdown_process.rs"
+required-features = ["host-acceptance"]
+
+[[test]]
+name = "simulation_process"
+path = "tests/simulation_process.rs"
+required-features = ["host-acceptance"]
+
+[[test]]
+name = "composition"
+path = "tests/composition.rs"
+required-features = ["host-acceptance"]

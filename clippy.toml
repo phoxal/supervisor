@@ -1,0 +1,10 @@
+# Clippy's own configuration, for the two switches that are not lint levels and
+# therefore cannot live in `[workspace.lints]`.
+#
+# `unwrap_used` and `expect_used` are denied across the workspace because a
+# panic in a participant takes down a process supervising hardware. A test has
+# no such caller: when a fixture cannot be staged or a decode that the test
+# itself wrote fails, panicking *is* the report. These two switches are what
+# keep the workspace gate off test code, so no test needs a local `allow`.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

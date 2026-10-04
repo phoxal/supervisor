@@ -1,0 +1,11 @@
+# Prepare reviewed version PRs; registry publication remains explicit.
+[workspace]
+release_always = false
+dependencies_update = false
+changelog_update = false
+publish = false
+git_tag_enable = true
+git_tag_name = "{name}-v{version}"
+git_release_enable = false
+semver_check = true
+pr_name = "chore(release): update package versions"

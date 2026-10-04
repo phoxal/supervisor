@@ -1,0 +1,9 @@
+schema: phoxal/component/v0
+model: { file: model.xml, root_body: mount }
+capabilities:
+  encoder:
+    kind: encoder
+    publish_rate_hz: 50.0
+    target:
+      kind: joint
+      id: fixture_joint

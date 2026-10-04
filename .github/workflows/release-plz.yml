@@ -1,0 +1,22 @@
+name: release-plz
+
+# Each package version belongs to this repository; release planning creates a reviewable PR.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: supervisor-release-plz
+  cancel-in-progress: false
+
+jobs:
+  release-pr:
+    name: prepare independent release PR
+    uses: phoxal/.github/.github/workflows/rust-release-plz-pr.yml@main
+    secrets: inherit

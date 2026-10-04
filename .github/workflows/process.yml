@@ -1,0 +1,21 @@
+name: process qualification
+on:
+  workflow_dispatch:
+    inputs:
+      tool-version:
+        description: Exact released tool version supporting the current interfaces.
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install the independently selected tool
+        run: |
+          cargo install cargo-phoxal --registry phoxal --version "${{ inputs.tool-version }}" --locked --root "$RUNNER_TEMP/tool"
+          echo "PHOXAL_TOOL=$RUNNER_TEMP/tool/bin/cargo-phoxal" >> "$GITHUB_ENV"
+      - run: cargo test --locked --features host-acceptance

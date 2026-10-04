@@ -1,0 +1,28 @@
+
+[package]
+name = "phoxal-encoder-b-fixture"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-only"
+publish = false
+description = "Independent encoder producer fixture (example.encoder_b.v1.EncoderB)."
+
+[[bin]]
+name = "phoxal-encoder-b-fixture"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { "version" = "=0.0.0-dev.8", "registry" = "phoxal", "default-features" = false, "features" = ["runtime"] }
+serde = { "version" = "1.0.228", "features" = ["derive"] }
+
+[lints]
+
+[lints.rust]
+unused = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+todo = "deny"
+unimplemented = "deny"

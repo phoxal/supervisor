@@ -1,0 +1,10 @@
+schema: phoxal/robot/v0
+robot:
+  id: countdown-brain
+services:
+  countdown:
+    source:
+      path: ../countdown
+    binary: countdown-authoring-fixture
+supervisor:
+  source: { path: ../../.. }

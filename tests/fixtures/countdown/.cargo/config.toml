@@ -1,0 +1,2 @@
+[registries.phoxal]
+index = "sparse+https://phoxal.github.io/registry/"

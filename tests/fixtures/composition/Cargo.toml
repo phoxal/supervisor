@@ -1,0 +1,30 @@
+
+[package]
+name = "phoxal-contract-robot-fixture"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-only"
+publish = false
+description = "Composed robot fixture for the manifest service evaluation."
+
+[[bin]]
+name = "contract-robot-brain"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { "version" = "=0.0.0-dev.8", "registry" = "phoxal", "default-features" = false, "features" = ["runtime"] }
+
+[build-dependencies]
+phoxal = { "version" = "=0.0.0-dev.8", "registry" = "phoxal", "default-features" = false, "features" = ["build"] }
+
+[lints]
+
+[lints.rust]
+unused = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+todo = "deny"
+unimplemented = "deny"
