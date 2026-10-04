@@ -1,11 +1,10 @@
-# Prepare reviewed version PRs; registry publication remains explicit.
 [workspace]
-release_always = false
-dependencies_update = false
-changelog_update = false
-publish = false
+release_always = true
+changelog_update = true
+publish = true
 git_tag_enable = true
-git_tag_name = "{name}-v{version}"
-git_release_enable = false
-semver_check = true
+git_tag_name = "{{ package }}-v{{ version }}"
+git_release_enable = true
+# Breaking changes are permitted while the framework remains pre-1.0.
+semver_check = false
 pr_name = "chore(release): update package versions"

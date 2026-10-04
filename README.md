@@ -5,7 +5,7 @@ Shared wire contracts and pure bundle validation belong to the framework SDK.
 Linux and macOS are supported.
 Windows and other operating systems are unsupported and unqualified.
 
-A robot selects this application with `supervisor.source` in `robot.yaml`, using the same path, exact registry package, or pinned Git source format as its participants.
+A robot selects this application with `supervisor.source` in `robot.yaml`, using the same local path or full pinned Git source format as its participants.
 The developer tool acquires that selection and stages the application in the bundle.
 The robot's Cargo manifest contains genuine Rust library dependencies, not a supervisor dependency.
 Hardware preparation checks bundle, launch, execution, and target interfaces.
@@ -50,14 +50,7 @@ Strict CI and release qualification use `--locked` to require an up-to-date comm
 
 ## Publication
 
-Review and merge package version changes normally before publication.
-Dispatch the publication workflow on the approved revision, selecting one package and an independently released publication-tool version.
-The workflow verifies its archive and submits it for registry review; a pending registry review is not a published release.
-Packages retain independent versions, and compatibility follows the interfaces consumed by each operation.
-
-## Registry dependencies
-
-Framework SDK/build/macros `0.0.0-dev.8` are published in the Phoxal registry.
-Committed application lockfiles record their registry sources and archive checksums.
-Normal source builds use those dependencies without a sibling framework checkout or a local overlay.
-Publishing this repository's application or participant packages remains a separate release operation.
+Review release-plz version and generated changelog PRs before publication.
+Successful main-branch CI enables the standard crates.io release job.
+The application consumes the released SDK through ordinary public dependencies without sibling checkouts or local overlays.
+Application versions are independent of SDK versions; compatibility follows the actual interfaces required by the operation.
