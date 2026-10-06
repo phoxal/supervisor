@@ -44,6 +44,7 @@ async fn main() -> ExitCode {
         ready_file: cli.ready_file.as_deref(),
         scenario_result: cli.scenario_result.as_deref(),
         simulation_run: cli.simulation_run.as_deref(),
+        simulation_context: cli.simulation_context.as_deref(),
         owner_pid: cli.owner_pid,
         listen: cli.listen.as_deref(),
         launch_mode,

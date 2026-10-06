@@ -64,6 +64,8 @@ impl ReferenceRuntime {
 
     #[step]
     fn advance(&mut self, ctx: &mut Context<'_, Self>) -> phoxal::Result<()> {
+        let value = ctx.target().valid().map_or("absent".to_owned(), |value| value.count.to_string());
+        std::fs::write(self.marker.with_file_name("leased-target.marker"), value)?;
         let previous = self.count;
         self.advance_once(ctx);
         // The derived standard encoder endpoint: one live sample per step,

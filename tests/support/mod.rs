@@ -25,6 +25,22 @@ pub fn reference_runtime_artifact() -> serde_json::Value {
             "init_timeout_ms": 1000,
             "config_schema": {"type": "null"},
             "inputs": [{
+                "name": "target",
+                "delivery": "leased_value",
+                "max_items": 1,
+                "max_bytes": 4096,
+                "port": "target",
+                "signature": {
+                    "endpoint": "target",
+                    "service": "example.inspection.v1.InspectionState",
+                    "method": "target",
+                    "shape": "call",
+                    "request": "example.inspection.v1.InspectionState",
+                    "response": "google.protobuf.Empty",
+                    "retained_latest": false,
+                    "lease_valid_for_ms": 500
+                }
+            }, {
                 "name": "read",
                 "response_max_bytes": 4096,
                 "response_max_items": 8,
@@ -157,15 +173,22 @@ pub fn write_bundle(
         components,
         component_sources: Default::default(),
         model: None,
-        simulation: simulation
-            .map(|value| serde_json::from_value(value).expect("simulation contract")),
     };
     AdmittedBundle::validate(manifest.clone()).expect("admit the fixture's resolved bundle");
-    std::fs::write(
-        root.join("manifest.json"),
-        serde_json::to_vec_pretty(&manifest).expect("serialize the resolved manifest"),
-    )
-    .expect("write the resolved manifest");
+    let bytes = serde_json::to_vec_pretty(&manifest).expect("serialize the resolved manifest");
+    std::fs::write(root.join("manifest.json"), &bytes).expect("write the resolved manifest");
+    if let Some(simulation) = simulation {
+        let context = phoxal::artifact::simulation_context::SimulationContext::new(
+            &bytes,
+            serde_json::from_value(simulation).expect("simulation facts"),
+        );
+        std::fs::create_dir_all(execution_dir(root)).expect("execution state directory");
+        std::fs::write(
+            execution_dir(root).join("native-context.json"),
+            serde_json::to_vec(&context).expect("native context"),
+        )
+        .expect("write command-owned native context");
+    }
 }
 
 pub fn execution_dir(bundle: &Path) -> PathBuf {
@@ -179,12 +202,27 @@ pub struct SupervisorProcess {
 
 impl SupervisorProcess {
     pub fn launch(bundle: &Path, id: &str) -> Self {
+        Self::launch_mode(bundle, id, "hardware")
+    }
+
+    pub fn launch_mode(bundle: &Path, id: &str, mode: &str) -> Self {
         let mut command = tokio::process::Command::new(supervisor_binary());
         command
             .arg(bundle)
             .arg("--state-dir")
             .arg(execution_dir(bundle))
-            .args(["--scope", "local", "--supervisor-id", id]);
+            .args([
+                "--scope",
+                "local",
+                "--supervisor-id",
+                id,
+                "--launch-mode",
+                mode,
+            ]);
+        let context = execution_dir(bundle).join("native-context.json");
+        if context.is_file() {
+            command.arg("--simulation-context").arg(context);
+        }
         command.process_group(0).kill_on_drop(true);
         let child = command.spawn().expect("launch supervisor executable");
         let group = child.id().expect("live supervisor PID") as i32;

@@ -1945,6 +1945,7 @@ mod tests {
             timeline_id: "timeline-1".to_owned(),
             payload: Vec::new(),
             timeout_ms: 10,
+            withdraw_setpoint: false,
         };
         assert!(adapter.validate_binding(&mutation, &request, 102).is_ok());
         assert_eq!(

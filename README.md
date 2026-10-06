@@ -22,7 +22,10 @@ phoxal-supervisor /path/to/bundle \
 ```
 
 The directory is used literally for the lock and socket; no project or release-directory inference is required.
-A hardware launch refuses a simulation run specification before starting children.
+A hardware launch refuses simulation run specifications and native implementation contexts before starting children.
+For simulation, the simulator supplies a command-owned context bound to the common build manifest.
+It must cover the compiled driver contracts and authored actuation routes before the supervisor omits those physical executables from its process roster.
+The authored graph stays unchanged; native implementations handle the components while the supervisor launches the brain and every authored service.
 
 Run the application's unit suite with `cargo test`.
 

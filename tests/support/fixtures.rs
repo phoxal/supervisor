@@ -62,7 +62,7 @@ fn stage() -> tempfile::TempDir {
     );
     let metadata: serde_json::Value =
         serde_json::from_slice(&metadata.stdout).expect("Cargo metadata JSON");
-    let mut patch = String::from("\n[patch.phoxal]\n");
+    let mut patch = String::from("\n[patch.crates-io]\n");
     let mut local = false;
     for package in metadata["packages"].as_array().expect("Cargo packages") {
         let name = package["name"].as_str().expect("package name");
@@ -80,8 +80,9 @@ fn stage() -> tempfile::TempDir {
         let program = entry.expect("staged program").path();
         if local {
             let config = program.join(".cargo/config.toml");
-            let original =
-                std::fs::read_to_string(&config).expect("fixture registry configuration");
+            std::fs::create_dir_all(config.parent().expect("fixture config parent"))
+                .expect("fixture config directory");
+            let original = std::fs::read_to_string(&config).unwrap_or_default();
             std::fs::write(config, original + &patch).expect("selected local SDK overlay");
         }
         for name in ["robot.yaml", "robot.substitution.yaml"] {
@@ -171,14 +172,39 @@ pub fn composition_bundle(substitution: bool) -> (tempfile::TempDir, PathBuf) {
         )
         .expect("isolated substituted composition");
     }
-    let bundle = stage.path().join("bundle");
+    let robot_id = if substitution {
+        "contract-robot-backup"
+    } else {
+        "contract-robot"
+    };
+    let robot_file = source.join("robot.yaml");
+    let mut document: serde_yaml::Value =
+        serde_yaml::from_str(&std::fs::read_to_string(&robot_file).expect("composition document"))
+            .expect("composition YAML");
+    document["robot"]["id"] = serde_yaml::Value::String(robot_id.to_owned());
+    std::fs::write(
+        robot_file,
+        serde_yaml::to_string(&document).expect("composition YAML"),
+    )
+    .expect("isolated composition identity");
+    let archive = stage.path().join("robot.zip");
     successful(
         tool(&source)
             .args(["build", "--output"])
-            .arg(&bundle)
+            .arg(&archive)
             .output()
             .expect("public bundle build"),
         "composition build",
     );
-    (stage, bundle)
+    let build = target()
+        .join("phoxal")
+        .join(robot_id)
+        .join(phoxal::artifact::application::HOST_EXECUTION_TARGET)
+        .join("release/build");
+    assert!(
+        build.join("manifest.json").is_file(),
+        "runnable composition build"
+    );
+    assert!(archive.is_file(), "deployable composition archive");
+    (stage, build)
 }

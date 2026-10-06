@@ -109,7 +109,8 @@ async fn a_controlled_simulation_resets_through_the_process_boundary() {
     let socket = support::execution_dir(&root).join("supervisor.sock");
     let endpoint = format!("unixsock-stream/{}", socket.display());
 
-    let mut supervisor = support::SupervisorProcess::launch(&root, "simulation-e2e");
+    let mut supervisor =
+        support::SupervisorProcess::launch_mode(&root, "simulation-e2e", "controlled");
 
     let connection = tokio::time::timeout(STARTUP, connect_when_bound(&endpoint, &mut supervisor))
         .await
@@ -207,6 +208,92 @@ async fn a_controlled_simulation_resets_through_the_process_boundary() {
         last_job_id: Some(MISSION_JOB),
         last_outcome: contract::Outcome::Completed,
     };
+    // Normal authenticated public ingress is fenced to the admitted controlled timeline.
+    // A distinct public caller can submit while the authority owner advances time.
+    let caller_connection = connect_when_bound(&endpoint, &mut supervisor).await;
+    let caller = caller_connection
+        .supervisor("simulation-e2e")
+        .await
+        .expect("external public session");
+    let caller_execution = caller
+        .execution(&execution_id)
+        .await
+        .expect("external execution");
+    let caller_brain = caller_execution
+        .service("brain")
+        .await
+        .expect("external brain");
+    let external_target = caller_brain
+        .method(phoxal::contracts::CallMethod::<
+            brain_contract::ConsumedEventState,
+            phoxal::contracts::Empty,
+        >::new(
+            "phoxal.tests.authoring.consumer.v1.ConsumedEventState",
+            "target",
+            "target",
+            "phoxal.tests.authoring.consumer.v1.ConsumedEventState",
+            "google.protobuf.Empty",
+            Some(100),
+            &[],
+        ))
+        .await
+        .expect("controlled leased input");
+    let external_target = std::sync::Arc::new(external_target);
+    let (receipt_owner, receipt_bus) = phoxal::runtime::connection::ConnectionOwner::open(
+        phoxal::runtime::connection::ConnectionConfig::for_external(
+            phoxal::identity::ExecutionId::parse(&execution_id).expect("execution id"),
+            None,
+            vec![endpoint.clone()],
+        ),
+    )
+    .await
+    .expect("receipt observer");
+    let receipts = receipt_bus
+        .session()
+        .expect("observer session")
+        .declare_subscriber(phoxal::runtime::execution_protocol::key(
+            &receipt_bus,
+            "supervisor",
+            "delivery-ack",
+        ))
+        .with(zenoh::handlers::FifoChannel::new(16))
+        .await
+        .expect("receipt subscription");
+    // Round-trip on the same reliable link after declaring the observer:
+    // the router has processed its subscription before the external caller publishes.
+    let bootstrap = receipt_bus
+        .session()
+        .expect("observer session")
+        .get(
+            phoxal::communication::DeploymentTarget::new("local", "simulation-e2e")
+                .expect("target")
+                .bootstrap_key(),
+        )
+        .timeout(PHASE)
+        .await
+        .expect("observer link barrier");
+    assert!(
+        bootstrap
+            .recv_async()
+            .await
+            .expect("bootstrap response")
+            .result()
+            .is_ok()
+    );
+    let pending_target = external_target.clone();
+    let pending = tokio::spawn(async move {
+        pending_target
+            .call(
+                brain_contract::ConsumedEventState {
+                    last_job_id: None,
+                    last_outcome: None,
+                    handled_count: 73,
+                },
+                STARTUP,
+            )
+            .await
+    });
+    wait_external_lease_admission(&receipts, &execution_id, &timeline, 1).await;
     let (mut boundary, mut sequence, mut operation) = (0_u64, 1_u64, 2_u64);
     let mut admitted_boundary = 0_u64;
     for (step, state) in [&active, &completed].iter().enumerate() {
@@ -240,6 +327,34 @@ async fn a_controlled_simulation_resets_through_the_process_boundary() {
         admitted_boundary = target;
         operation += 1;
     }
+    assert!(matches!(
+        pending
+            .await
+            .expect("public call task")
+            .expect("controlled public call"),
+        phoxal::session::CallOutcome::Received(_)
+    ));
+    assert_eq!(
+        fs::read_to_string(root.join("controlled-lease.marker")).expect("runtime marker"),
+        "73"
+    );
+    // Renew at 40ms, before the original 100ms expiry. Withdrawal below is
+    // checked at 100ms, before this renewed lease's 140ms expiry.
+    let renewing_target = external_target.clone();
+    let mut renewal = Some(tokio::spawn(async move {
+        renewing_target
+            .call(
+                brain_contract::ConsumedEventState {
+                    last_job_id: None,
+                    last_outcome: None,
+                    handled_count: 74,
+                },
+                STARTUP,
+            )
+            .await
+    }));
+    wait_external_lease_admission(&receipts, &execution_id, &timeline, 2).await;
+    let mut withdrawal = None;
     // The mission holds a 100 ms logical delay after the completion it
     // observes, so keep admitting the completed status — one boundary per
     // cycle — until it latches success, well inside the real job's
@@ -274,6 +389,46 @@ async fn a_controlled_simulation_resets_through_the_process_boundary() {
         boundary = target;
         admitted_boundary = target;
         operation += 1;
+        if step == 1 {
+            assert!(matches!(
+                renewal
+                    .take()
+                    .expect("renewal task")
+                    .await
+                    .expect("renewal join")
+                    .expect("renewal call"),
+                phoxal::session::CallOutcome::Received(_)
+            ));
+            assert_eq!((boundary - 1) * QUANTUM_NS, 60_000_000);
+            assert_eq!(
+                fs::read_to_string(root.join("controlled-lease.marker")).expect("renewal marker"),
+                "74",
+                "renewal is consumed at 60ms, before the original 100ms expiry"
+            );
+            let withdrawing_target = external_target.clone();
+            withdrawal = Some(tokio::spawn(async move {
+                withdrawing_target.withdraw(STARTUP).await
+            }));
+            wait_external_lease_admission(&receipts, &execution_id, &timeline, 3).await;
+        }
+        if step == 3 {
+            assert!(matches!(
+                withdrawal
+                    .take()
+                    .expect("withdrawal task")
+                    .await
+                    .expect("withdrawal join")
+                    .expect("withdrawal call"),
+                phoxal::session::CallOutcome::Received(_)
+            ));
+            assert_eq!((boundary - 1) * QUANTUM_NS, 100_000_000);
+            assert_eq!(
+                fs::read_to_string(root.join("controlled-lease.marker"))
+                    .expect("withdrawal marker"),
+                "absent",
+                "withdrawal removes renewed evidence before 140ms expiry"
+            );
+        }
         if let Some(mission) = phases.value() {
             eprintln!(
                 "[trace] hold {step}: mission phase {}",
@@ -295,6 +450,11 @@ async fn a_controlled_simulation_resets_through_the_process_boundary() {
         .await;
     eprintln!("[trace] mission Succeeded on simulated data by boundary {admitted_boundary}");
 
+    assert_eq!(
+        fs::read_to_string(root.join("controlled-lease.marker")).expect("runtime marker"),
+        "absent",
+        "withdrawn lease remains absent"
+    );
     // Prepare one more transition, then prove the immutable cadence and
     // capture-time fidelity are enforced before anything is admitted: a
     // not-due claim at a due boundary, and a capture time that disagrees
@@ -428,6 +588,25 @@ async fn a_controlled_simulation_resets_through_the_process_boundary() {
     let refusal = refused.expect_err("the retired grant must be refused");
     eprintln!("[trace] retired-grant refusal: {refusal:?}");
 
+    let retired = external_target
+        .call(
+            brain_contract::ConsumedEventState {
+                last_job_id: None,
+                last_outcome: None,
+                handled_count: 99,
+            },
+            PHASE,
+        )
+        .await;
+    assert!(
+        matches!(
+            retired,
+            Err(_)
+                | Ok(phoxal::session::CallOutcome::NotSent(_))
+                | Ok(phoxal::session::CallOutcome::RejectedBeforeAdmission(_))
+        ),
+        "retired timeline must be refused before admission: {retired:?}"
+    );
     // The reset retired every timeline-scoped observation binding. Rebind
     // the mission and the real service's status NOW — before the fresh
     // timeline's first publication — so both watchers receive the fresh
@@ -494,6 +673,11 @@ async fn a_controlled_simulation_resets_through_the_process_boundary() {
     );
     eprintln!("[trace] fresh service status received (idle)");
 
+    assert_eq!(
+        fs::read_to_string(root.join("controlled-lease.marker")).expect("reset marker"),
+        "absent",
+        "reset has no fresh lease evidence"
+    );
     // Fresh traffic: the mission issues a new request, the real service
     // serves it (its status changes to the fresh active job), the reply
     // returns, and the mission completes a second time on fresh simulated
@@ -622,7 +806,48 @@ async fn a_controlled_simulation_resets_through_the_process_boundary() {
         .await
         .expect("the public connection closes in time")
         .expect("the public connection closes cleanly");
+    caller_connection
+        .close()
+        .await
+        .expect("external caller closes");
+    receipt_owner.close().await;
     supervisor.shutdown().await;
+}
+
+async fn wait_external_lease_admission(
+    receipts: &zenoh::pubsub::Subscriber<
+        zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>,
+    >,
+    execution: &str,
+    timeline: &str,
+    sequence: u64,
+) {
+    tokio::time::timeout(PHASE, async {
+        loop {
+            let sample = receipts.recv_async().await.expect("delivery receipt");
+            let receipt = phoxal::communication::execution::DeliveryAck::decode(
+                sample.payload().to_bytes().as_ref(),
+            )
+            .expect("decode delivery receipt");
+            eprintln!("[trace] external delivery receipt: {receipt:?}");
+            if receipt.source == "supervisor"
+                && receipt.target == "brain.target"
+                && receipt.direction == "request"
+                && receipt.sequence == sequence
+            {
+                assert_eq!(receipt.execution_id, execution);
+                assert_eq!(receipt.timeline_id, timeline);
+                assert!(
+                    receipt.admitted,
+                    "request admission refused: {:?}",
+                    receipt.detail
+                );
+                return;
+            }
+        }
+    })
+    .await
+    .expect("normal external request reaches the receiver before advancing time");
 }
 
 /// One transition key; the session fills its own session identifier.
@@ -970,6 +1195,26 @@ fn build_bundle() -> TestBundle {
     fs::copy(consumer, &consumer_executable).expect("copy the compiled brain consumer fixture");
     fs::set_permissions(&consumer_executable, fs::Permissions::from_mode(0o755))
         .expect("make the compiled brain consumer fixture executable");
+    let driver = root.join("bin/native-driver");
+    fs::write(
+        &driver,
+        "#!/bin/sh\necho physical fixture must not launch >&2\nexit 73\n",
+    )
+    .expect("native driver marker");
+    fs::set_permissions(&driver, fs::Permissions::from_mode(0o755)).expect("driver executable");
+    let native_artifact = serde_json::json!({"runtime": {
+        "schema":"phoxal/artifact/v0", "record":"runtime", "config_schema":{"type":"null"},
+        "period_ms":20,"timeout_ms":100,"init_timeout_ms":1000,
+        "inputs":[{"name":"actuator","port":"actuator","delivery":"leased_value",
+            "request_fqn":"phoxal.component.actuator.v1.ActuatorCommand","max_items":1,"max_bytes":4096,
+            "signature":{"endpoint":"actuator","service":"phoxal.component.actuator.v1.ActuatorCommand",
+                "method":"actuator","shape":"call","request":"phoxal.component.actuator.v1.ActuatorCommand",
+                "response":"google.protobuf.Empty","retained_latest":false,"lease_valid_for_ms":100}}],
+        "outputs":[{"name":"status","port":"status","max_items":1,"max_bytes":4096,"bootstrap":true,
+            "signature":{"endpoint":"status","service":"phoxal.tests.authoring.countdown.v1.CountdownState",
+                "method":"status","shape":"observation","request":"google.protobuf.Empty",
+                "response":"phoxal.tests.authoring.countdown.v1.CountdownState","retained_latest":true,"lease_valid_for_ms":null}}]
+    }});
     use phoxal::artifact::bundle::{BundleComponent, InstanceRole};
     use phoxal::artifact::document::{ComponentDocument, ComponentModel};
     let simulation = serde_json::json!({
@@ -996,8 +1241,8 @@ fn build_bundle() -> TestBundle {
         "actuation_bindings": [{
             "service_instance": "brain",
             "port": "command",
-            "payload_fqn": "phoxal.component.actuator.v1.ActuatorSetpoint",
-            "actuator_ids": ["mission_motor"]
+            "payload_fqn": "phoxal.component.actuator.v1.ActuatorCommand",
+            "actuator_ids": ["mission_countdown.motor"]
         }]
     });
     support::write_bundle(
@@ -1006,15 +1251,18 @@ fn build_bundle() -> TestBundle {
         vec![
             ("brain", brain_artifact()),
             ("countdown", countdown_artifact()),
+            ("native-driver", native_artifact),
         ],
         vec![
             ("brain", InstanceRole::Brain, "brain"),
             ("countdown", InstanceRole::Service, "countdown"),
+            ("mission_countdown", InstanceRole::Driver, "native-driver"),
         ],
         vec![
             ("brain.countdown_finished", "countdown.finished"),
             ("brain.countdown_status", "mission_countdown.status"),
             ("brain.start_countdown", "countdown.start"),
+            ("mission_countdown.actuator", "brain.command"),
         ],
         vec![BundleComponent {
             instance: "mission_countdown".to_owned(),
@@ -1027,7 +1275,7 @@ fn build_bundle() -> TestBundle {
                     file: "model.xml".into(),
                     root_body: "root".to_owned(),
                 },
-                capabilities: Default::default(),
+                capabilities: std::collections::BTreeMap::from([("motor".to_owned(), serde_json::from_value(serde_json::json!({"kind":"motor","target":{"kind":"actuator","id":"motor"}})).expect("native motor capability"))]),
                 assets: Vec::new(),
             },
         }],

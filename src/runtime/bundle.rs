@@ -25,6 +25,7 @@ pub(crate) struct RuntimeBundle {
     root: PathBuf,
     admitted: AdmittedBundle,
     executables: BTreeMap<String, VerifiedExecutable>,
+    native_context: Option<PathBuf>,
 }
 
 /// One instance's verified executable facts.
@@ -115,7 +116,28 @@ impl RuntimeBundle {
             root,
             admitted,
             executables,
+            native_context: None,
         })
+    }
+
+    pub(crate) fn admit_native_context(&mut self, path: &Path) -> Result<()> {
+        let bytes = bounded_file(path, MAX_MANIFEST_BYTES)?;
+        let context: phoxal::artifact::simulation_context::SimulationContext =
+            serde_json::from_slice(&bytes)?;
+        let manifest = bounded_file(&self.root.join(MANIFEST_FILE), MAX_MANIFEST_BYTES)?;
+        context
+            .admit(&manifest, &mut self.admitted)
+            .map_err(anyhow::Error::msg)?;
+        self.native_context = Some(path.canonicalize()?);
+        Ok(())
+    }
+
+    pub(crate) fn native_context(&self) -> Option<&Path> {
+        self.native_context.as_deref()
+    }
+
+    pub(crate) fn native_instance(&self, instance: &str) -> bool {
+        self.native_context.is_some() && self.instance_role(instance) == Some(InstanceRole::Driver)
     }
 
     /// The admitted bundle root.
@@ -167,7 +189,9 @@ impl RuntimeBundle {
 
     /// Every launch instance with its verified executable, in stable order.
     pub(crate) fn executables_iter(&self) -> impl Iterator<Item = (&String, &VerifiedExecutable)> {
-        self.executables.iter()
+        self.executables
+            .iter()
+            .filter(|(instance, _)| !self.native_instance(instance))
     }
 
     /// The canonical runtime record selected for one launch instance.
@@ -181,58 +205,6 @@ impl RuntimeBundle {
     /// The launch role of one instance.
     pub(crate) fn instance_role(&self, instance: &str) -> Option<InstanceRole> {
         self.admitted.instances.get(instance).map(|i| i.role)
-    }
-
-    /// Apply simulation-only source bindings to this in-memory execution
-    /// graph. The immutable manifest and its bytes remain unchanged.
-    pub(crate) fn apply_simulation_bindings(
-        &mut self,
-        bindings: &[phoxal::artifact::simulation_run::SimulationBinding],
-    ) -> Result<()> {
-        let mut seen = std::collections::BTreeSet::new();
-        for binding in bindings {
-            if binding.source_instance != "supervisor" {
-                bail!(
-                    "simulation binding for {}.{} has unsupported source instance `{}`",
-                    binding.target_instance,
-                    binding.signature.endpoint,
-                    binding.source_instance
-                );
-            }
-            if binding.signature.shape != phoxal::artifact::MethodShape::Call
-                || binding.signature.lease_valid_for_ms.is_none()
-            {
-                bail!(
-                    "simulation binding for {}.{} is not a leased generated call",
-                    binding.target_instance,
-                    binding.signature.endpoint
-                );
-            }
-            let target = EndpointReference {
-                instance: binding.target_instance.clone(),
-                endpoint: binding.signature.endpoint.clone(),
-            };
-            if !seen.insert(target.clone()) {
-                bail!("simulation run declares conflicting producers for `{target}`");
-            }
-            let replaces_authored_source =
-                self.admitted.execution_connections.contains_key(&target);
-            if binding.replaces_authored_source != replaces_authored_source {
-                bail!(
-                    "simulation binding for `{target}` records replaces_authored_source={}, but the immutable graph requires {}",
-                    binding.replaces_authored_source,
-                    replaces_authored_source
-                );
-            }
-            let source = EndpointReference {
-                instance: binding.source_instance.clone(),
-                endpoint: binding.signature.endpoint.clone(),
-            };
-            self.admitted
-                .execution_connections
-                .insert(target, vec![source]);
-        }
-        Ok(())
     }
 }
 
@@ -416,6 +388,12 @@ impl RuntimeBundle {
                 supervisor: phoxal::artifact::bundle::BundleSupervisor {
                     path: "bin/supervisor".to_owned(),
                 },
+                resolved_runtimes: instances
+                    .iter()
+                    .map(|(id, instance)| {
+                        (id.clone(), artifacts[&instance.artifact].runtime.clone())
+                    })
+                    .collect(),
                 artifacts,
                 instances,
                 execution_connections,
@@ -425,6 +403,7 @@ impl RuntimeBundle {
                 simulation: None,
             },
             executables: verified,
+            native_context: None,
         }
     }
 

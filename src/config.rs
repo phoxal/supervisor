@@ -49,6 +49,10 @@ pub(super) struct Cli {
     #[arg(long, value_name = "PATH", hide = true)]
     pub(super) simulation_run: Option<PathBuf>,
 
+    /// Simulator-owned native implementation context, refused by hardware launches.
+    #[arg(long, value_name = "PATH", hide = true)]
+    pub(super) simulation_context: Option<PathBuf>,
+
     /// Command-scoped owner whose loss cancels the complete execution.
     #[arg(long, value_name = "PID", hide = true)]
     pub(super) owner_pid: Option<u32>,

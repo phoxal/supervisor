@@ -13,10 +13,10 @@ name = "countdown-brain-fixture"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { "version" = "0.69.0", "default-features" = false, "features" = ["runtime"] }
+phoxal = { "version" = "0.70.0", "default-features" = false, "features" = ["runtime"] }
 
 [build-dependencies]
-phoxal = { "version" = "0.69.0", "default-features" = false, "features" = ["build"] }
+phoxal = { "version" = "0.70.0", "default-features" = false, "features" = ["build"] }
 
 [dev-dependencies]
 serde_json = { "version" = "1.0.149" }

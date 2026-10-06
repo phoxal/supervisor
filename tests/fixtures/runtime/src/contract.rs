@@ -31,6 +31,9 @@ mod v1 {
     /// observation and the component-specific operations in one contract.
     #[phoxal::endpoints]
     pub struct InspectionApi {
+        #[phoxal::input(lease_ms = 500, max_bytes = 4096)]
+        target: Latest<InspectionState>,
+
         #[phoxal::output(projection = state, bootstrap, on_change, max_bytes = 4096)]
         status: Latest<InspectionState>,
 

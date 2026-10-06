@@ -20,6 +20,8 @@ use crate::provider::{FinishedEvent, Outcome};
 use phoxal::Result;
 use phoxal::runtime::Context;
 
+static LEASE_MARKER: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
 struct Brain {
     mission: phoxal::runtime::behavior::Tree<Brain>,
     last_job_id: Option<u64>,
@@ -96,6 +98,10 @@ impl Brain {
 
     #[step]
     fn advance(&mut self, ctx: &mut Context<'_, Self>) -> Result<()> {
+        if let Some(marker) = LEASE_MARKER.get() {
+            let value = ctx.target().valid().map_or("absent".to_owned(), |value| value.handled_count.to_string());
+            std::fs::write(marker, value)?;
+        }
         self.mission.tick(ctx)
     }
 
@@ -109,14 +115,11 @@ impl Brain {
     }
 
     #[publish(command)]
-    fn command(&self) -> Option<phoxal::contracts::component::actuator::ActuatorSetpoint> {
+    fn command(&self) -> Option<phoxal::contracts::component::actuator::ActuatorCommand> {
         // The leased actuator projection: one zero-velocity command for the
         // simulated mission motor, re-derived from the runtime state.
-        Some(phoxal::contracts::component::actuator::ActuatorSetpoint {
-            targets: vec![phoxal::contracts::component::actuator::ActuatorTarget {
-                actuator_id: "mission_motor".to_owned(),
-                control: Some(phoxal::contracts::component::actuator::Control::VelocityRadps(0.0)),
-            }],
+        Some(phoxal::contracts::component::actuator::ActuatorCommand {
+            control: Some(phoxal::contracts::component::actuator::Control::VelocityRadps(0.0)),
         })
     }
 
@@ -136,6 +139,8 @@ impl Brain {
 }
 
 fn main() -> Result<()> {
+    let launch = phoxal::runtime::RuntimeLaunch::parse()?;
+    LEASE_MARKER.set(launch.bundle_root.join("controlled-lease.marker")).ok();
     phoxal::runtime::run::<Brain>()
 }
 

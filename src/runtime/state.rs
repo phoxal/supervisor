@@ -32,6 +32,7 @@ struct Data {
     time_domain: TimeDomain,
     runtime_boundary: u64,
     ready: bool,
+    next_external_sequence: u64,
 }
 
 /// Shared handle to one supervisor execution's private state.
@@ -52,8 +53,19 @@ impl ExecutionState {
                 },
                 runtime_boundary: 0,
                 ready: false,
+                next_external_sequence: 1,
             })),
         }
+    }
+
+    /// Allocate one order shared by all supervisor-owned external callers.
+    pub(crate) fn next_external_sequence(&self) -> Result<u64, String> {
+        let mut data = self.lock();
+        let sequence = data.next_external_sequence;
+        data.next_external_sequence = sequence
+            .checked_add(1)
+            .ok_or("external ingress sequence exhausted")?;
+        Ok(sequence)
     }
 
     /// The supervisor's current execution time authority.

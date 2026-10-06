@@ -145,6 +145,8 @@ pub struct PublicBindingContext {
     pub service_instance: String,
     /// Generated descriptor admitted by the adapter.
     pub metadata: MethodMetadata,
+    /// Explicit withdrawal from the authenticated operation request.
+    pub withdraw_setpoint: bool,
 }
 
 impl From<crate::runtime::adapter::BindingContext> for PublicBindingContext {
@@ -156,6 +158,7 @@ impl From<crate::runtime::adapter::BindingContext> for PublicBindingContext {
             timeline_id: binding.timeline_id,
             service_instance: binding.service_instance,
             metadata: binding.metadata,
+            withdraw_setpoint: false,
         }
     }
 }
@@ -1092,10 +1095,12 @@ async fn serve_one_operation(
                 .await;
                 return;
             }
+            let mut binding: PublicBindingContext = binding.into();
+            binding.withdraw_setpoint = request.withdraw_setpoint;
             let timeout = bounded_timeout(request.timeout_ms, limits.deadline());
             let outcome = match tokio::time::timeout(
                 timeout,
-                backend.call(operation, binding.into(), request.payload.clone(), timeout),
+                backend.call(operation, binding, request.payload.clone(), timeout),
             )
             .await
             {
@@ -1197,6 +1202,7 @@ async fn serve_one_operation(
                 timeline_id: request.timeline_id.clone(),
                 payload: Vec::new(),
                 timeout_ms: 0,
+                withdraw_setpoint: false,
             };
             let binding = match adapter.lock().await.validate_operation_binding(
                 &route,

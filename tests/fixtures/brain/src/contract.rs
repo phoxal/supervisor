@@ -38,6 +38,9 @@ mod v1 {
     /// actuators.
     #[phoxal::endpoints]
     pub struct BrainApi {
+        #[phoxal::input(lease_ms = 100, max_bytes = 4096)]
+        target: Latest<ConsumedEventState>,
+
         #[phoxal::call]
         start_countdown: crate::Start,
 
@@ -54,7 +57,7 @@ mod v1 {
         mission: State<MissionState>,
 
         #[phoxal::output(projection = state, lease_ms = 100, max_bytes = 1024)]
-        command: Latest<::phoxal::contracts::component::actuator::ActuatorSetpoint>,
+        command: Latest<::phoxal::contracts::component::actuator::ActuatorCommand>,
     }
 }
 

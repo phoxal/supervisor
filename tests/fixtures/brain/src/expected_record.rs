@@ -45,6 +45,28 @@ pub fn expected_runtime_record() -> RuntimeRecord {
         config_schema: serde_json::json!({"type": "null"}),
         inputs: vec![
             InputRecord {
+                name: "target".into(),
+                delivery: InputDelivery::LeasedValue,
+                max_age_ms: None,
+                max_items: None,
+                max_bytes: Some(4096),
+                port: Some("target".into()),
+                signature: Some(MethodSignature {
+                    endpoint: "target".into(),
+                    service: "phoxal.tests.authoring.consumer.v1.ConsumedEventState".into(),
+                    method: "target".into(),
+                    shape: MethodShape::Call,
+                    request: "phoxal.tests.authoring.consumer.v1.ConsumedEventState".into(),
+                    response: "google.protobuf.Empty".into(),
+                    retained_latest: false,
+                    lease_valid_for_ms: Some(100),
+                }),
+                request_fqn: Some("phoxal.tests.authoring.consumer.v1.ConsumedEventState".into()),
+                response_fqn: Some("google.protobuf.Empty".into()),
+                response_max_bytes: None,
+                response_max_items: None,
+            },
+            InputRecord {
                 name: "start_countdown".to_owned(),
                 delivery: InputDelivery::CallCompletions,
                 max_age_ms: None,
@@ -98,6 +120,8 @@ pub fn expected_runtime_record() -> RuntimeRecord {
         ],
         outputs: vec![
             OutputRecord {
+                family: None,
+                family_template: None,
                 name: "handled".to_owned(),
                 port: Some("handled".to_owned()),
                 signature: Some(state_signature(
@@ -112,6 +136,8 @@ pub fn expected_runtime_record() -> RuntimeRecord {
                 timeout_ms: None,
             },
             OutputRecord {
+                family: None,
+                family_template: None,
                 name: "mission".to_owned(),
                 port: Some("mission".to_owned()),
                 signature: Some(state_signature(
@@ -126,11 +152,13 @@ pub fn expected_runtime_record() -> RuntimeRecord {
                 timeout_ms: None,
             },
             OutputRecord {
+                family: None,
+                family_template: None,
                 name: "command".to_owned(),
                 port: Some("command".to_owned()),
                 signature: Some(leased_signature(
                     "command",
-                    "phoxal.component.actuator.v1.ActuatorSetpoint",
+                    "phoxal.component.actuator.v1.ActuatorCommand",
                     100,
                 )),
                 max_items: None,

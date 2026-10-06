@@ -121,6 +121,7 @@ struct ProtocolInner {
     state: ExecutionState,
     instances: Vec<RuntimeInstance>,
     artifacts: BTreeMap<String, phoxal::artifact::RuntimeRecord>,
+    native_instances: BTreeSet<String>,
     observation_providers:
         BTreeMap<(String, String), phoxal::artifact::bundle::BundleSimulationProvider>,
     connections: BTreeMap<
@@ -287,16 +288,25 @@ impl RuntimeExecutionProtocol {
     ) -> Result<Self> {
         let mut instances = Vec::new();
         let mut artifacts = BTreeMap::<String, phoxal::artifact::RuntimeRecord>::new();
+        let native_instances = source
+            .instances()
+            .keys()
+            .filter(|instance| source.native_instance(instance))
+            .cloned()
+            .collect::<BTreeSet<_>>();
         for instance in source.instances().keys() {
             let instance = instance.clone();
-            source
-                .executable(&instance)
-                .with_context(|| format!("runtime `{instance}` has no verified executable"))?;
             let record = source
                 .runtime_record(&instance)
                 .with_context(|| format!("runtime `{instance}` has no runtime record"))?
                 .clone();
             artifacts.insert(instance.clone(), record.clone());
+            if native_instances.contains(&instance) {
+                continue;
+            }
+            source
+                .executable(&instance)
+                .with_context(|| format!("runtime `{instance}` has no verified executable"))?;
             let phoxal::artifact::RuntimeRecord::V0 {
                 period_ms,
                 timeout_ms,
@@ -387,8 +397,16 @@ impl RuntimeExecutionProtocol {
                 pin_response,
             });
         }
+        // Native driver consumers remain in the admitted graph. Their receipts
+        // come from native actuation, not from an unlaunched physical process.
+        let process_connections = source
+            .connections()
+            .iter()
+            .filter(|(consumer, _)| !source.native_instance(&consumer.instance))
+            .map(|(consumer, sources)| (consumer.clone(), sources.clone()))
+            .collect();
         let (delivery_routes, request_routes) =
-            graph_delivery_routes(source.connections(), &artifacts)?;
+            graph_delivery_routes(&process_connections, &artifacts)?;
         let mut observation_acknowledgements = BTreeMap::new();
         if let Some(simulation) = source.simulation() {
             for provider in &simulation.providers {
@@ -419,6 +437,7 @@ impl RuntimeExecutionProtocol {
                 state: state.clone(),
                 instances,
                 artifacts,
+                native_instances,
                 observation_providers: source
                     .simulation()
                     .into_iter()
@@ -469,10 +488,7 @@ impl RuntimeExecutionProtocol {
                 &self.inner.artifacts,
                 &self.inner.connections,
                 &self.inner.observation_providers,
-                self.inner
-                    .scenario
-                    .as_ref()
-                    .map(|scenario| &scenario.program),
+                &self.inner.native_instances,
                 quantum_ns,
             )?;
         }
@@ -626,19 +642,11 @@ impl RuntimeExecutionProtocol {
         let Some(scenario) = self.inner.scenario.as_ref() else {
             return Ok(());
         };
-        let quantum_ns = u64::from(scenario.program.quantum().micros()) * 1_000;
-        let run_valid_until_ns = u64::from(scenario.program.transition_count())
-            .checked_add(1)
-            .and_then(|count| count.checked_mul(quantum_ns))
-            .ok_or_else(|| "scenario validity bound overflowed".to_owned())?;
-        for (ordinal, step) in scenario.program.steps().iter().enumerate() {
+        for step in scenario.program.steps() {
             if u64::from(step.boundary) != boundary {
                 continue;
             }
-            let sequence = u64::try_from(ordinal)
-                .ok()
-                .and_then(|value| value.checked_add(1))
-                .ok_or_else(|| "scenario action sequence overflowed".to_owned())?;
+            let sequence = self.inner.state.next_external_sequence()?;
             let eligible_boundary = boundary
                 .checked_add(1)
                 .ok_or_else(|| "scenario eligible boundary overflowed".to_owned())?;
@@ -649,9 +657,10 @@ impl RuntimeExecutionProtocol {
                     encoded_payload,
                     validity,
                 } => {
-                    let mut metadata = RuntimeWireMetadata::data(
-                        "supervisor",
+                    let mut metadata = RuntimeWireMetadata::external_request(
                         ExecutionTime::from_nanos(logical_time_ns),
+                        sequence,
+                        eligible_boundary,
                         sequence,
                     )
                     .with_delivery_identity(
@@ -659,10 +668,11 @@ impl RuntimeExecutionProtocol {
                         timeline_id.to_owned(),
                         boundary,
                         0,
-                    )
-                    .with_eligible_boundary(eligible_boundary);
+                    );
                     metadata.expires_at_nanos = Some(match validity {
-                        phoxal::scenario::plan_support::Validity::Permanent => run_valid_until_ns,
+                        phoxal::scenario::plan_support::Validity::Permanent => {
+                            return Err("external setpoint requires a finite declared lease".into());
+                        }
                         phoxal::scenario::plan_support::Validity::Lease { valid_for_ms } => {
                             logical_time_ns
                                 .checked_add(valid_for_ms.checked_mul(1_000_000).ok_or_else(
@@ -673,9 +683,9 @@ impl RuntimeExecutionProtocol {
                     });
                     publish_scenario_sample(
                         &self.inner.bus,
-                        "supervisor",
+                        target_instance,
                         &consumer_signature.endpoint,
-                        "publish",
+                        "request",
                         encoded_payload,
                         metadata,
                         WireControl::Data,
@@ -696,11 +706,12 @@ impl RuntimeExecutionProtocol {
                 }
                 ScenarioAction::Withdraw {
                     target_instance,
-                    producer_signature,
+                    consumer_signature,
                 } => {
-                    let metadata = RuntimeWireMetadata::data(
-                        "supervisor",
+                    let metadata = RuntimeWireMetadata::external_request(
                         ExecutionTime::from_nanos(logical_time_ns),
+                        sequence,
+                        eligible_boundary,
                         sequence,
                     )
                     .with_delivery_identity(
@@ -708,13 +719,12 @@ impl RuntimeExecutionProtocol {
                         timeline_id.to_owned(),
                         boundary,
                         0,
-                    )
-                    .with_eligible_boundary(eligible_boundary);
+                    );
                     publish_scenario_sample(
                         &self.inner.bus,
-                        "supervisor",
-                        &producer_signature.endpoint,
-                        "publish",
+                        target_instance,
+                        &consumer_signature.endpoint,
+                        "request",
                         &[],
                         metadata,
                         WireControl::Withdraw,
@@ -724,8 +734,8 @@ impl RuntimeExecutionProtocol {
                         label: &step.label,
                         kind: "withdraw",
                         timeline_id,
-                        target: format!("{target_instance}.{}", producer_signature.endpoint),
-                        port: &producer_signature.endpoint,
+                        target: format!("{target_instance}.{}", consumer_signature.endpoint),
+                        port: &consumer_signature.endpoint,
                         sequence,
                         bytes: 0,
                         production_boundary: boundary,
@@ -1366,7 +1376,7 @@ fn scenario_delivery_ack_matches(
         && acknowledgement.source == "supervisor"
         && acknowledgement.target == target
         && acknowledgement.port == port
-        && acknowledgement.direction == "publish"
+        && acknowledgement.direction == "request"
         && acknowledgement.sequence == sequence
         && acknowledgement.item == 0
         && acknowledgement.bytes == bytes
@@ -1392,10 +1402,13 @@ fn input_sources(
                 .insert((source.instance.clone(), source.endpoint.clone()));
         }
     }
-    for input in inputs
-        .iter()
-        .filter(|input| input.delivery == phoxal::artifact::InputDelivery::CallIngress)
-    {
+    for input in inputs.iter().filter(|input| {
+        matches!(
+            input.delivery,
+            phoxal::artifact::InputDelivery::CallIngress
+                | phoxal::artifact::InputDelivery::LeasedValue
+        ) && input.signature.is_some()
+    }) {
         let port = input.port.as_deref().unwrap_or(&input.name);
         let callers = providers.entry(input.name.clone()).or_default();
         callers.insert(("supervisor".into(), port.to_owned()));
@@ -2227,22 +2240,8 @@ fn validate_actuations(
     runtime: &RuntimeInstance,
     logical_time_ns: u64,
 ) -> Result<Vec<wire::Actuation>, String> {
-    if accepted.actuations.len() > MAX_PRODUCT_RECEIPTS {
-        return Err("runtime actuation set is too large".to_owned());
-    }
-    let mut seen = BTreeSet::new();
-    for actuation in &accepted.actuations {
-        let Some(max_bytes) = runtime.actuation_max_bytes.get(&actuation.port) else {
-            return Err("runtime returned an actuation for a foreign port".to_owned());
-        };
-        if actuation.payload.is_empty()
-            || actuation.payload.len() as u64 > *max_bytes
-            || actuation.valid_until_ns <= logical_time_ns
-            || !seen.insert(actuation.port.as_str())
-        {
-            return Err("runtime returned an invalid or duplicate actuation".to_owned());
-        }
-    }
+    let seen =
+        validate_actuation_receipts(accepted, &runtime.actuation_max_bytes, logical_time_ns)?;
     if !runtime
         .actuation_ports
         .iter()
@@ -2256,6 +2255,31 @@ fn validate_actuations(
         .filter(|actuation| runtime.actuation_ports.contains(&actuation.port))
         .cloned()
         .collect())
+}
+
+fn validate_actuation_receipts<'a>(
+    accepted: &'a wire::InvocationAccepted,
+    max_bytes_by_port: &BTreeMap<String, u64>,
+    logical_time_ns: u64,
+) -> Result<BTreeSet<&'a str>, String> {
+    if accepted.actuations.len() > MAX_PRODUCT_RECEIPTS {
+        return Err("runtime actuation set is too large".to_owned());
+    }
+    let mut seen = BTreeSet::new();
+    for actuation in &accepted.actuations {
+        let Some(max_bytes) = max_bytes_by_port.get(&actuation.port) else {
+            return Err("runtime returned an actuation for a foreign port".to_owned());
+        };
+        // A default Protobuf message can legitimately encode to zero bytes.
+        // Withdrawal is explicit in the delivery protocol, not an empty payload.
+        if actuation.payload.len() as u64 > *max_bytes
+            || actuation.valid_until_ns <= logical_time_ns
+            || !seen.insert(actuation.port.as_str())
+        {
+            return Err("runtime returned an invalid or duplicate actuation".to_owned());
+        }
+    }
+    Ok(seen)
 }
 
 fn decode<M: Message + Default>(sample: zenoh::sample::Sample) -> Result<M> {
@@ -2429,6 +2453,30 @@ mod tests {
     }
 
     #[test]
+    fn leased_receipts_accept_default_protobuf_without_weakening_bounds() {
+        let mut accepted = wire::InvocationAccepted {
+            actuations: vec![wire::Actuation {
+                port: "manual".to_owned(),
+                payload: Vec::new(),
+                valid_until_ns: 100,
+            }],
+            ..Default::default()
+        };
+        let bounds = BTreeMap::from([("manual".to_owned(), 1)]);
+        assert_eq!(
+            validate_actuation_receipts(&accepted, &bounds, 0).unwrap(),
+            BTreeSet::from(["manual"])
+        );
+        assert!(validate_actuation_receipts(&accepted, &bounds, 100).is_err());
+        assert!(validate_actuation_receipts(&accepted, &BTreeMap::new(), 0).is_err());
+        accepted.actuations[0].payload = vec![1, 2];
+        assert!(validate_actuation_receipts(&accepted, &bounds, 0).is_err());
+        accepted.actuations[0].payload.clear();
+        accepted.actuations.push(accepted.actuations[0].clone());
+        assert!(validate_actuation_receipts(&accepted, &bounds, 0).is_err());
+    }
+
+    #[test]
     fn input_receipts_distinguish_consumer_fields_from_producer_ports() {
         let graph = std::collections::BTreeMap::from([
             (
@@ -2481,7 +2529,7 @@ mod tests {
             source: "supervisor".to_owned(),
             target: "motion.manual".to_owned(),
             port: "manual".to_owned(),
-            direction: "publish".to_owned(),
+            direction: "request".to_owned(),
             sequence: 9,
             item: 0,
             bytes: 4,

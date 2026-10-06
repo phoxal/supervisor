@@ -50,7 +50,6 @@ struct ExecutionLaunch {
     target: DeploymentTarget,
     ready_file: Option<PathBuf>,
     scenario_result: Option<PathBuf>,
-    simulation_run: Option<PathBuf>,
     shutdown: CancellationToken,
     scenario_program: Option<phoxal::scenario::plan_support::Program>,
 }
@@ -77,6 +76,7 @@ pub(super) struct RunRequest<'a> {
     pub(super) ready_file: Option<&'a Path>,
     pub(super) scenario_result: Option<&'a Path>,
     pub(super) simulation_run: Option<&'a Path>,
+    pub(super) simulation_context: Option<&'a Path>,
     pub(super) owner_pid: Option<u32>,
     pub(super) listen: Option<&'a str>,
     pub(super) launch_mode: ScenarioLaunchMode,
@@ -95,6 +95,7 @@ pub async fn run(request: RunRequest<'_>) -> Result<()> {
         ready_file,
         scenario_result,
         simulation_run,
+        simulation_context,
         owner_pid,
         listen,
         launch_mode,
@@ -107,10 +108,16 @@ pub async fn run(request: RunRequest<'_>) -> Result<()> {
     })?;
     let paths = RuntimeRendezvous::for_state_dir(state_dir);
     let lock = lock::SupervisorLock::acquire(&paths.supervisor_lock())?;
-    admit_simulation_run(launch_mode, simulation_run.is_some())?;
+    admit_simulation_run(
+        launch_mode,
+        simulation_run.is_some() || simulation_context.is_some(),
+    )?;
     let mut runtime = RuntimeBundle::open(&canonical)?;
+    if let Some(context) = simulation_context {
+        runtime.admit_native_context(context)?;
+    }
     let scenario_program = match simulation_run {
-        Some(path) => Some(admit_run_specification(&mut runtime, path)?),
+        Some(path) => Some(admit_run_specification(&runtime, path)?),
         None => None,
     };
     tracing::info!(
@@ -147,7 +154,6 @@ pub async fn run(request: RunRequest<'_>) -> Result<()> {
             target,
             ready_file: ready_file.map(Path::to_owned),
             scenario_result: scenario_result.map(Path::to_owned),
-            simulation_run: simulation_run.map(Path::to_owned),
             shutdown: shutdown.clone(),
             scenario_program,
         },
@@ -172,7 +178,7 @@ fn process_is_alive(pid: u32) -> bool {
 }
 
 fn admit_run_specification(
-    runtime: &mut RuntimeBundle,
+    runtime: &RuntimeBundle,
     path: &Path,
 ) -> Result<phoxal::scenario::plan_support::Program> {
     const MAX_RUN_SPECIFICATION_BYTES: u64 = 16 * 1024 * 1024;
@@ -212,7 +218,6 @@ fn admit_run_specification(
         bundle,
         model,
         program,
-        bindings,
         captures,
         execution,
         ..
@@ -254,7 +259,7 @@ fn admit_run_specification(
             decoded.captures().len()
         );
     }
-    validate_program_contract(&decoded, bindings, captures)?;
+    validate_program_contract(&decoded, runtime, captures)?;
     let simulation = runtime
         .simulation()
         .ok_or_else(|| anyhow::anyhow!("simulation run requires a controlled simulation bundle"))?;
@@ -278,78 +283,97 @@ fn admit_run_specification(
         execution.quantum_ns,
     )
     .map_err(|mismatch| anyhow::anyhow!("{mismatch}"))?;
-    runtime.apply_simulation_bindings(bindings)?;
     Ok(decoded)
 }
 
 fn validate_program_contract(
     program: &phoxal::scenario::plan_support::Program,
-    bindings: &[phoxal::artifact::simulation_run::SimulationBinding],
+    runtime: &RuntimeBundle,
     captures: &[phoxal::artifact::simulation_run::SimulationCaptureRequirement],
 ) -> Result<()> {
-    use phoxal::artifact::simulation_run::{
-        SimulationBinding, SimulationCapturePolicy, SimulationCaptureRequirement,
-    };
+    use phoxal::artifact::simulation_run::{SimulationCapturePolicy, SimulationCaptureRequirement};
     use phoxal::scenario::plan_support::{Action, Capture};
 
-    let mut expected = std::collections::BTreeMap::<(String, String), SimulationBinding>::new();
     for step in program.steps() {
-        let (target_instance, signature, payload_bytes) = match &step.action {
+        let (target, signature, bytes, delivery) = match &step.action {
             Action::Setpoint {
                 target_instance,
                 consumer_signature,
                 encoded_payload,
                 ..
-            } => (target_instance, consumer_signature, encoded_payload.len()),
+            } => (
+                target_instance,
+                consumer_signature,
+                encoded_payload.len(),
+                phoxal::artifact::InputDelivery::LeasedValue,
+            ),
             Action::Withdraw {
                 target_instance,
-                producer_signature,
-            } => (target_instance, producer_signature, 0),
-            Action::Command { .. } => continue,
+                consumer_signature,
+            } => (
+                target_instance,
+                consumer_signature,
+                0,
+                phoxal::artifact::InputDelivery::LeasedValue,
+            ),
+            Action::Command {
+                target_instance,
+                service_signature,
+                request_encoded,
+                ..
+            } => (
+                target_instance,
+                service_signature,
+                request_encoded.len(),
+                phoxal::artifact::InputDelivery::CallIngress,
+            ),
         };
-        let key = (target_instance.clone(), signature.endpoint.to_owned());
-        let max_message_bytes = u32::try_from(payload_bytes)
-            .map_err(|_| anyhow::anyhow!("simulation program payload exceeds u32"))?;
-        let candidate = SimulationBinding {
-            target_instance: target_instance.clone(),
-            source_instance: "supervisor".to_owned(),
-            signature: signature.clone(),
-            max_message_bytes,
-            replaces_authored_source: false,
-        };
-        expected
-            .entry(key)
-            .and_modify(|existing| {
-                existing.max_message_bytes = existing.max_message_bytes.max(max_message_bytes);
+        let record = runtime
+            .runtime_record(target)
+            .with_context(|| format!("scenario target `{target}` is not authored"))?;
+        let input = execution::record_parts(record)
+            .0
+            .iter()
+            .find(|input| {
+                input.delivery == delivery && input.port.as_deref() == Some(&signature.endpoint)
             })
-            .or_insert(candidate);
-    }
-    if bindings.len() != expected.len() {
-        bail!(
-            "simulation specification declares {} bindings; program requires {}",
-            bindings.len(),
-            expected.len()
-        );
-    }
-    for binding in bindings {
-        let key = (
-            binding.target_instance.clone(),
-            binding.signature.endpoint.clone(),
-        );
-        let expected = expected.get(&key).with_context(|| {
-            format!(
-                "simulation specification declares binding {}.{} absent from the program",
-                binding.target_instance, binding.signature.endpoint
-            )
-        })?;
-        if binding.source_instance != expected.source_instance
-            || binding.signature != expected.signature
-            || binding.max_message_bytes != expected.max_message_bytes
+            .with_context(|| {
+                format!(
+                    "scenario target `{target}.{}` has no declared external ingress",
+                    signature.endpoint
+                )
+            })?;
+        if let Action::Setpoint { validity, .. } = &step.action {
+            let phoxal::scenario::plan_support::Validity::Lease { valid_for_ms } = validity else {
+                bail!(
+                    "scenario setpoint `{}` requires finite leased authority",
+                    step.label
+                );
+            };
+            if *valid_for_ms == 0
+                || !signature
+                    .lease_valid_for_ms
+                    .is_some_and(|maximum| *valid_for_ms <= maximum)
+            {
+                bail!(
+                    "scenario setpoint `{}` exceeds its declared lease",
+                    step.label
+                );
+            }
+        }
+        if input.signature.as_ref() != Some(signature)
+            || !input
+                .max_bytes
+                .is_some_and(|maximum| bytes as u64 <= maximum)
+            || (delivery == phoxal::artifact::InputDelivery::LeasedValue
+                && (signature.shape != phoxal::artifact::MethodShape::Call
+                    || !signature.lease_valid_for_ms.is_some_and(|lease| lease > 0)
+                    || signature.response != "google.protobuf.Empty"))
         {
             bail!(
-                "simulation binding {}.{} does not match the canonical program",
-                binding.target_instance,
-                binding.signature.endpoint
+                "scenario action `{}` does not match authored ingress `{target}.{}`",
+                step.label,
+                signature.endpoint
             );
         }
     }
@@ -413,7 +437,6 @@ async fn execute(launch: ExecutionLaunch, state: &ExecutionState) -> Result<()> 
         target,
         ready_file,
         scenario_result,
-        simulation_run,
         shutdown,
         scenario_program,
     } = launch;
@@ -499,29 +522,26 @@ async fn execute(launch: ExecutionLaunch, state: &ExecutionState) -> Result<()> 
         }
     };
 
-    let mut processes =
-        match ProcessSupervisor::launch(source, execution, &endpoint, simulation_run.as_deref())
-            .await
-        {
-            Ok(processes) => processes,
-            Err(error) => {
-                let error = anyhow::anyhow!("failed to launch the Runtime graph: {error:#}");
-                mark_execution_failed(&public, execution, &error).await;
-                return finish_run(
-                    Err(error),
-                    RunResources {
-                        processes: None,
-                        public,
-                        owner,
-                        router,
-                        watchdog,
-                        shutdown,
-                        router_loss,
-                    },
-                )
-                .await;
-            }
-        };
+    let mut processes = match ProcessSupervisor::launch(source, execution, &endpoint).await {
+        Ok(processes) => processes,
+        Err(error) => {
+            let error = anyhow::anyhow!("failed to launch the Runtime graph: {error:#}");
+            mark_execution_failed(&public, execution, &error).await;
+            return finish_run(
+                Err(error),
+                RunResources {
+                    processes: None,
+                    public,
+                    owner,
+                    router,
+                    watchdog,
+                    shutdown,
+                    router_loss,
+                },
+            )
+            .await;
+        }
+    };
 
     let (mode, quantum_ns) = match surface.simulation.as_ref() {
         Some(definition) => (RuntimeExecutionMode::Controlled, definition.quantum_ns()),
@@ -712,7 +732,13 @@ async fn start_public_session(
     execution: ExecutionId,
     protocol: Arc<RuntimeExecutionProtocol>,
 ) -> Result<PublicSessionServer> {
-    let coordinator = Arc::new(RuntimeExecutionCoordinator::new(state.clone()));
+    let coordinator = Arc::new(RuntimeExecutionCoordinator::new(
+        state.clone(),
+        surface
+            .simulation
+            .as_ref()
+            .map(|definition| definition.quantum_ns()),
+    ));
     let mut adapter = SupervisorAdapter::with_defaults(
         target.clone(),
         env!("CARGO_PKG_VERSION"),
@@ -989,7 +1015,7 @@ mod tests {
 
         let directory = tempfile::tempdir()?;
         fs::write(directory.path().join("manifest.json"), b"canonical bundle")?;
-        let mut runtime = RuntimeBundle::for_test(directory.path(), "fixture", Vec::new());
+        let runtime = RuntimeBundle::for_test(directory.path(), "fixture", Vec::new());
         let specification = SimulationRunSpecification::V0 {
             bundle: SimulationBundleReference {
                 robot_id: "fixture".to_owned(),
@@ -1005,7 +1031,6 @@ mod tests {
                 binary: "phoxal-simulator".to_owned(),
             },
             program: SimulationProgram { bytes: Vec::new() },
-            bindings: Vec::new(),
             captures: Vec::new(),
             execution: SimulationExecutionBounds {
                 quantum_ns: 2_000_000,
@@ -1016,7 +1041,7 @@ mod tests {
         };
         let path = directory.path().join("run.json");
         fs::write(&path, serde_json::to_vec(&specification)?)?;
-        let error = admit_run_specification(&mut runtime, &path)
+        let error = admit_run_specification(&runtime, &path)
             .expect_err("a run cannot target another immutable bundle");
         assert!(error.to_string().contains("references bundle manifest"));
         Ok(())

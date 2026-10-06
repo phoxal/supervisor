@@ -9,11 +9,15 @@ services:
   backup_source:
     source: { path: ../encoder-b }
 connections:
-  brain.inspect: consumer.inspect
-  consumer.encoder: backup_source.encoder
-  consumer.ticks: encoder_source.ticks
-  consumer.read_encoder: encoder_source.read_encoder
-  consumer.read_backup: backup_source.measure_encoder
-
+  - from: consumer.inspect
+    to: brain.inspect
+  - from: backup_source.encoder
+    to: consumer.encoder
+  - from: encoder_source.ticks
+    to: consumer.ticks
+  - from: encoder_source.read_encoder
+    to: consumer.read_encoder
+  - from: backup_source.measure_encoder
+    to: consumer.read_backup
 supervisor:
   source: { path: ../../.. }

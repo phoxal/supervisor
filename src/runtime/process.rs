@@ -44,7 +44,6 @@ impl ProcessSupervisor {
         bundle: &RuntimeBundle,
         execution: ExecutionId,
         connect: &str,
-        simulation_run: Option<&Path>,
     ) -> Result<Self> {
         let stop = CancellationToken::new();
         let mut children: Vec<(String, Child)> = Vec::new();
@@ -64,8 +63,8 @@ impl ProcessSupervisor {
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit())
                 .kill_on_drop(true);
-            if let Some(path) = simulation_run {
-                command.arg("--simulation-run").arg(path);
+            if let Some(context) = bundle.native_context() {
+                command.arg("--simulation-context").arg(context);
             }
             let child = match command.spawn().with_context(|| {
                 format!(
@@ -198,7 +197,6 @@ mod tests {
             &bundle,
             phoxal::identity::ExecutionId::mint(),
             "test-endpoint",
-            None,
         )
         .await
         .expect("the process fixture launches");

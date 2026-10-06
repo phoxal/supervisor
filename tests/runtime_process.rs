@@ -4,6 +4,9 @@
 
 mod support;
 
+#[path = "fixtures/runtime/src/contract.rs"]
+mod contract;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -13,6 +16,102 @@ use phoxal::communication::session::SupervisorState;
 use phoxal::session::{Connection, ConnectionConfig, Supervisor, connect};
 
 const STARTUP: Duration = Duration::from_secs(20);
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hardware_public_lease_reaches_generated_input_expires_and_withdraws() {
+    use phoxal::session::CallOutcome;
+    let bundle = build_bundle();
+    let endpoint = format!(
+        "unixsock-stream/{}",
+        support::execution_dir(&bundle.root)
+            .join("supervisor.sock")
+            .display()
+    );
+    let mut child = support::SupervisorProcess::launch(&bundle.root, "lease-hardware");
+    let connection = tokio::time::timeout(STARTUP, connect_when_bound(&endpoint, &mut child))
+        .await
+        .expect("public socket");
+    let supervisor = connection
+        .supervisor("lease-hardware")
+        .await
+        .expect("public session");
+    tokio::time::timeout(STARTUP, wait_until_ready(&supervisor))
+        .await
+        .expect("ready deadline")
+        .expect("ready");
+    let executions = supervisor
+        .management()
+        .executions()
+        .await
+        .expect("execution inventory");
+    let execution = supervisor
+        .execution(&executions[0].execution_id)
+        .await
+        .expect("execution");
+    let brain = execution.service("brain").await.expect("brain");
+    let target = brain
+        .method(phoxal::contracts::CallMethod::<
+            contract::InspectionState,
+            phoxal::contracts::Empty,
+        >::new(
+            "example.inspection.v1.InspectionState",
+            "target",
+            "target",
+            "example.inspection.v1.InspectionState",
+            "google.protobuf.Empty",
+            Some(500),
+            &[],
+        ))
+        .await
+        .expect("leased target");
+    let marker = bundle.root.join("leased-target.marker");
+    for count in [42, 7] {
+        assert!(matches!(
+            target
+                .call(
+                    contract::InspectionState {
+                        count,
+                        active: true
+                    },
+                    STARTUP
+                )
+                .await
+                .expect("public leased call"),
+            CallOutcome::Received(_)
+        ));
+        tokio::time::timeout(STARTUP, async {
+            while fs::read_to_string(&marker).ok().as_deref() != Some(&count.to_string()) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("generated runtime accepts lease at its hardware clock");
+        if count == 42 {
+            tokio::time::timeout(STARTUP, async {
+                while fs::read_to_string(&marker).ok().as_deref() != Some("absent") {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("lease expires without renewal");
+        }
+    }
+    // This hardware path proves the public withdrawal reply and eventual absence.
+    // The controlled process suite proves removal before expiry and renewal while live.
+    assert!(matches!(
+        target.withdraw(STARTUP).await.expect("explicit withdrawal"),
+        CallOutcome::Received(_)
+    ));
+    tokio::time::timeout(STARTUP, async {
+        while fs::read_to_string(&marker).ok().as_deref() != Some("absent") {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("withdrawal removes the accepted lease");
+    connection.close().await.expect("connection closes");
+    child.shutdown().await;
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn compiled_runtime_crosses_supervisor_and_zenoh_before_termination() {

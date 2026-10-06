@@ -10,9 +10,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use prost::Message;
@@ -100,8 +99,10 @@ pub(crate) struct ExternalIngressTicket {
     pub(crate) eligible_boundary: u64,
     /// Monotonic order of external requests at that boundary.
     pub(crate) ingress_sequence: u64,
-    /// Host-monotonic logical timestamp captured at admission.
+    /// Timestamp in the admitted hardware or controlled execution time domain.
     pub(crate) logical_time: ExecutionTime,
+    /// Only controlled executions use receiver timeline delivery fences.
+    pub(crate) controlled: bool,
 }
 
 /// Runtime-owned admission of an external public call.
@@ -154,13 +155,13 @@ impl Default for RuntimeIngressIdentity {
 /// and is never guessed from a process-local request counter.
 pub(crate) struct RuntimeExecutionCoordinator {
     state: ExecutionState,
-    origin: Instant,
+    clock: Mutex<phoxal::runtime::runner::SystemClock>,
+    simulation_quantum_ns: Option<u64>,
     ingress: Arc<Mutex<IngressState>>,
 }
 
 #[derive(Debug)]
 struct IngressState {
-    next_sequence: u64,
     reservations: BTreeMap<(String, String), usize>,
 }
 
@@ -171,18 +172,18 @@ impl std::fmt::Debug for RuntimeExecutionCoordinator {
         formatter
             .debug_struct("RuntimeExecutionCoordinator")
             .field("boundary", &self.current_boundary())
-            .field("origin", &self.origin)
+            .field("clock", &self.clock)
             .finish_non_exhaustive()
     }
 }
 
 impl RuntimeExecutionCoordinator {
-    pub(crate) fn new(state: ExecutionState) -> Self {
+    pub(crate) fn new(state: ExecutionState, simulation_quantum_ns: Option<u64>) -> Self {
         Self {
             state,
-            origin: Instant::now(),
+            clock: Mutex::new(phoxal::runtime::runner::SystemClock::new()),
+            simulation_quantum_ns,
             ingress: Arc::new(Mutex::new(IngressState {
-                next_sequence: 1,
                 reservations: BTreeMap::new(),
             })),
         }
@@ -194,7 +195,8 @@ impl RuntimeExecutionCoordinator {
     }
 
     fn host_time(&self) -> ExecutionTime {
-        ExecutionTime::from(self.origin.elapsed())
+        use phoxal::runtime::RuntimeClock;
+        lock_unpoisoned(&self.clock).now()
     }
 
     fn validate_external_identity(
@@ -262,23 +264,37 @@ impl RuntimeExternalIngress for RuntimeExecutionCoordinator {
                 "external Runtime ingress capacity is exhausted".to_owned(),
             ));
         }
-        let eligible_boundary = self.current_boundary().checked_add(1).ok_or_else(|| {
+        let completed_boundary = self.current_boundary();
+        let eligible_boundary = completed_boundary.checked_add(1).ok_or_else(|| {
             PublicBackendError::RejectedBeforeAdmission(
                 "Runtime eligible boundary is exhausted".to_owned(),
             )
         })?;
-        let ingress_sequence = ingress.next_sequence;
-        let next_sequence = ingress_sequence.checked_add(1).ok_or_else(|| {
-            PublicBackendError::RejectedBeforeAdmission(
-                "Runtime external ingress sequence is exhausted".to_owned(),
-            )
-        })?;
-        ingress.next_sequence = next_sequence;
+        let controlled = self.state.time_domain().mode == super::state::TimeMode::Simulated;
+        let logical_time = if controlled {
+            let quantum = self.simulation_quantum_ns.ok_or_else(|| {
+                PublicBackendError::RejectedBeforeAdmission(
+                    "controlled ingress has no native quantum".into(),
+                )
+            })?;
+            ExecutionTime::from_nanos(completed_boundary.checked_mul(quantum).ok_or_else(|| {
+                PublicBackendError::RejectedBeforeAdmission(
+                    "controlled ingress time overflow".into(),
+                )
+            })?)
+        } else {
+            self.host_time()
+        };
+        let ingress_sequence = self
+            .state
+            .next_external_sequence()
+            .map_err(PublicBackendError::RejectedBeforeAdmission)?;
         *ingress.reservations.entry(key).or_default() += 1;
         Ok(ExternalIngressTicket {
             eligible_boundary,
             ingress_sequence,
-            logical_time: self.host_time(),
+            logical_time,
+            controlled,
         })
     }
 
@@ -392,7 +408,8 @@ impl RuntimePublicSurface {
             }
 
             for input in runtime_record_parts(artifact).0 {
-                if input.delivery != phoxal::artifact::InputDelivery::CallIngress {
+                let leased = input.delivery == phoxal::artifact::InputDelivery::LeasedValue;
+                if !leased && input.delivery != phoxal::artifact::InputDelivery::CallIngress {
                     continue;
                 }
                 let port = input.port.as_deref().ok_or_else(|| {
@@ -411,22 +428,33 @@ impl RuntimePublicSurface {
                 )?;
                 let max_buffered_items = bounded_u32(
                     positive_bound(
-                        input.max_items,
+                        input.max_items.or(leased.then_some(1)),
                         &format!("Commands input `{instance}.{port}` item count"),
                     )?,
                     &format!("Commands input `{instance}.{port}` item count"),
                 )?;
-                let response_max_bytes = positive_bound(
-                    input.response_max_bytes,
-                    &format!("Call ingress `{instance}.{port}` response bytes"),
-                )?;
+                let response_max_bytes = if leased {
+                    if !signature.lease_valid_for_ms.is_some_and(|lease| lease > 0)
+                        || signature.response != "google.protobuf.Empty"
+                    {
+                        bail!(
+                            "leased input `{instance}.{port}` requires a positive lease and Empty response"
+                        );
+                    }
+                    0
+                } else {
+                    positive_bound(
+                        input.response_max_bytes,
+                        &format!("Call ingress `{instance}.{port}` response bytes"),
+                    )?
+                };
                 let metadata = MethodMetadata {
                     endpoint: port.to_owned(),
                     shape: MethodShape::Call,
                     input_fqn: signature.request.clone(),
                     output_fqn: signature.response.clone(),
                     max_message_bytes: bounded_u32(
-                        response_max_bytes,
+                        request_max_bytes.max(response_max_bytes),
                         &format!("Commands input `{instance}.{port}` response bytes"),
                     )?,
                     max_buffered_items,
@@ -435,7 +463,11 @@ impl RuntimePublicSurface {
                 };
                 let contract = RuntimeMethodContract {
                     metadata: metadata.clone(),
-                    role: RuntimeMethodRole::Commands,
+                    role: if leased {
+                        RuntimeMethodRole::Setpoint
+                    } else {
+                        RuntimeMethodRole::Commands
+                    },
                     request_max_bytes,
                     response_max_bytes,
                 };
@@ -705,7 +737,6 @@ pub(crate) struct RuntimePublicBackend {
     ports: Arc<BTreeMap<(String, String), RuntimeMethodContract>>,
     ingress: RuntimeIngressIdentity,
     external_ingress: Arc<dyn RuntimeExternalIngress>,
-    next_command: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for RuntimePublicBackend {
@@ -729,7 +760,6 @@ impl RuntimePublicBackend {
             ports: surface.ports.clone(),
             ingress: surface.ingress.clone(),
             external_ingress,
-            next_command: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -775,19 +805,44 @@ impl RuntimePublicBackend {
                 "Runtime external ingress sequence must be positive".to_owned(),
             ));
         }
-        let command_id = self.next_command.fetch_add(1, Ordering::Relaxed);
-        if command_id == 0 {
-            self.external_ingress.release(&key.0, &key.1, ticket);
-            return Err(PublicBackendError::RejectedBeforeAdmission(
-                "public Runtime command correlation exhausted".to_owned(),
-            ));
-        }
-        let metadata = RuntimeWireMetadata::external_command(
+        let command_id = ticket.ingress_sequence;
+        let mut metadata = RuntimeWireMetadata::external_command(
             ticket.logical_time,
             command_id,
             ticket.eligible_boundary,
             ticket.ingress_sequence,
         );
+        if binding.withdraw_setpoint {
+            if contract.role != RuntimeMethodRole::Setpoint || !payload.is_empty() {
+                self.external_ingress.release(&key.0, &key.1, ticket);
+                return Err(PublicBackendError::RejectedBeforeAdmission(
+                    "withdraw requires a leased call and empty payload".into(),
+                ));
+            }
+            metadata.control = WireControl::Withdraw as u32;
+        } else if contract.role == RuntimeMethodRole::Setpoint {
+            let expiry = contract
+                .metadata
+                .lease_valid_for_ms
+                .filter(|lease| *lease > 0)
+                .and_then(|lease| lease.checked_mul(1_000_000))
+                .and_then(|nanos| ticket.logical_time.as_nanos().checked_add(nanos));
+            let Some(expiry) = expiry else {
+                self.external_ingress.release(&key.0, &key.1, ticket);
+                return Err(PublicBackendError::RejectedBeforeAdmission(
+                    "setpoint requires a bounded positive lease".into(),
+                ));
+            };
+            metadata.expires_at_nanos = Some(expiry);
+        }
+        if contract.role == RuntimeMethodRole::Setpoint && ticket.controlled {
+            metadata = metadata.with_delivery_identity(
+                binding.execution_id.clone(),
+                binding.timeline_id.clone(),
+                ticket.eligible_boundary.saturating_sub(1),
+                0,
+            );
+        }
         let attachment = match encode_runtime_metadata(&metadata) {
             Ok(attachment) => attachment,
             Err(error) => {
@@ -1548,7 +1603,7 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 mod tests {
     use crate::runtime::bundle::TestExecutable;
     use std::collections::VecDeque;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use phoxal::communication::simulation::{CutReceipt, TransitionKey};
 
@@ -1687,8 +1742,32 @@ mod tests {
     }
 
     #[test]
+    fn hardware_ingress_uses_the_runtime_execution_clock() {
+        use phoxal::runtime::{RuntimeClock, runner::SystemClock};
+        let mut runtime_clock = SystemClock::new();
+        let before = runtime_clock.now();
+        let coordinator = RuntimeExecutionCoordinator::new(ready_state(), None);
+        let ticket = coordinator
+            .admit(
+                "consumer",
+                "target",
+                &RuntimeIngressIdentity::default(),
+                &external_contract(RuntimeMethodRole::Setpoint, 1),
+            )
+            .expect("hardware ticket");
+        let after = runtime_clock.now();
+        assert!(
+            ticket.logical_time >= before && ticket.logical_time <= after,
+            "hardware ticket {:?} is outside runtime clock {:?}..{:?}",
+            ticket.logical_time,
+            before,
+            after
+        );
+    }
+
+    #[test]
     fn external_coordinator_uses_ready_boundary_sequence_and_bounded_capacity() {
-        let coordinator = RuntimeExecutionCoordinator::new(ready_state());
+        let coordinator = RuntimeExecutionCoordinator::new(ready_state(), None);
         let contract = external_contract(RuntimeMethodRole::Commands, 2);
         let caller = RuntimeIngressIdentity::default();
         let first = coordinator
@@ -1866,11 +1945,13 @@ mod tests {
                     eligible_boundary: 17,
                     ingress_sequence: 42,
                     logical_time: ExecutionTime::from_nanos(123),
+                    controlled: false,
                 },
                 ExternalIngressTicket {
                     eligible_boundary: 17,
                     ingress_sequence: 43,
                     logical_time: ExecutionTime::from_nanos(124),
+                    controlled: false,
                 },
             ])),
             seen: Mutex::new(Vec::new()),
@@ -1907,6 +1988,7 @@ mod tests {
             }
         });
         let binding = PublicBindingContext {
+            withdraw_setpoint: false,
             session_id: vec![1],
             binding_id: vec![2],
             execution_id: "execution".to_owned(),
@@ -1954,6 +2036,114 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn public_leased_calls_stamp_expiry_and_distinguish_empty_value_from_withdrawal() {
+        let (owner, bus) = phoxal::runtime::connection::ConnectionOwner::open(
+            phoxal::runtime::connection::ConnectionConfig::for_external(
+                phoxal::identity::ExecutionId::mint(),
+                None,
+                Vec::new(),
+            ),
+        )
+        .await
+        .expect("bus opens");
+        let metadata = MethodMetadata {
+            endpoint: "target".into(),
+            shape: MethodShape::Call,
+            input_fqn: "fixture.Value".into(),
+            output_fqn: "google.protobuf.Empty".into(),
+            max_message_bytes: 64,
+            max_buffered_items: 1,
+            retained_latest: false,
+            lease_valid_for_ms: Some(100),
+        };
+        let surface = RuntimePublicSurface {
+            services: Vec::new(),
+            ports: Arc::new(BTreeMap::from([(
+                ("consumer".into(), "target".into()),
+                RuntimeMethodContract {
+                    metadata: metadata.clone(),
+                    role: RuntimeMethodRole::Setpoint,
+                    request_max_bytes: 64,
+                    response_max_bytes: 0,
+                },
+            )])),
+            ingress: RuntimeIngressIdentity::default(),
+            simulation: None,
+        };
+        let external = Arc::new(TestExternalIngress {
+            tickets: Mutex::new(VecDeque::from([
+                ExternalIngressTicket {
+                    eligible_boundary: 7,
+                    ingress_sequence: 21,
+                    logical_time: ExecutionTime::from_nanos(123),
+                    controlled: true,
+                },
+                ExternalIngressTicket {
+                    eligible_boundary: 7,
+                    ingress_sequence: 22,
+                    logical_time: ExecutionTime::from_nanos(124),
+                    controlled: true,
+                },
+            ])),
+            seen: Mutex::new(Vec::new()),
+        });
+        let backend = RuntimePublicBackend::new(bus.clone(), &surface, external);
+        let session = bus.session().expect("session");
+        let receiver = session
+            .declare_subscriber(bus.full_key(&port_key("consumer", "target", "request")))
+            .with(zenoh::handlers::FifoChannel::new(4))
+            .await
+            .expect("request subscription");
+        let reply_key = bus.full_key(&port_key("consumer", "target", "reply"));
+        let responder = tokio::spawn(async move {
+            for (control, expires) in [
+                (WireControl::Data, Some(100_000_123)),
+                (WireControl::Withdraw, None),
+            ] {
+                let sample = receiver.recv_async().await.expect("leased request");
+                let wire = WireSample::from_zenoh(sample).expect("wire metadata");
+                assert!(wire.payload().is_empty());
+                assert_eq!(wire.metadata().wire_control().expect("control"), control);
+                assert_eq!(wire.metadata().expires_at_nanos, expires);
+                assert_eq!(wire.metadata().execution_id.as_deref(), Some("execution"));
+                assert_eq!(wire.metadata().timeline_id.as_deref(), Some("timeline"));
+                assert_eq!(wire.metadata().caller.as_deref(), Some("supervisor.public"));
+                let mut reply = wire.metadata().clone();
+                reply.source = Some("consumer".into());
+                reply.control = WireControl::Data as u32;
+                session
+                    .put(reply_key.clone(), Vec::<u8>::new())
+                    .encoding(Encoding::from(PROTOBUF_ENCODING.to_owned()))
+                    .attachment(encode_runtime_metadata(&reply).expect("reply metadata"))
+                    .await
+                    .expect("reply");
+            }
+        });
+        for withdraw_setpoint in [false, true] {
+            let result = backend
+                .call_inner(
+                    PublicOperation::Call,
+                    PublicBindingContext {
+                        session_id: vec![1],
+                        binding_id: vec![2],
+                        execution_id: "execution".into(),
+                        timeline_id: "timeline".into(),
+                        service_instance: "consumer".into(),
+                        metadata: metadata.clone(),
+                        withdraw_setpoint,
+                    },
+                    Vec::new(),
+                    Duration::from_secs(1),
+                )
+                .await
+                .expect("leased call");
+            assert_eq!(result, PublicBackendOutcome::Received(Vec::new()));
+        }
+        responder.await.expect("responder stops");
+        owner.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn external_read_uses_the_same_supervisor_ticket_and_reply_correlation() {
         let (owner, bus) = phoxal::runtime::connection::ConnectionOwner::open(
             phoxal::runtime::connection::ConnectionConfig::for_external(
@@ -1993,6 +2183,7 @@ mod tests {
                 eligible_boundary: 9,
                 ingress_sequence: 7,
                 logical_time: ExecutionTime::from_nanos(1234),
+                controlled: false,
             }])),
             seen: Mutex::new(Vec::new()),
         });
@@ -2026,6 +2217,7 @@ mod tests {
                 .expect("read reply");
         });
         let binding = PublicBindingContext {
+            withdraw_setpoint: false,
             session_id: vec![1],
             binding_id: vec![2],
             execution_id: "execution".to_owned(),

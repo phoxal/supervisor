@@ -12,7 +12,7 @@ pub(super) fn validate_controlled_capacity(
         (String, String),
         phoxal::artifact::bundle::BundleSimulationProvider,
     >,
-    scenario_program: Option<&Program>,
+    native_instances: &BTreeSet<String>,
     quantum_ns: u64,
 ) -> Result<()> {
     let periods = instances
@@ -20,6 +20,11 @@ pub(super) fn validate_controlled_capacity(
         .map(|runtime| (runtime.instance.as_str(), runtime.period_ns))
         .collect::<BTreeMap<_, _>>();
     for (consumer, sources) in connections {
+        // Native receivers are validated by the complete implementation context.
+        // They have no process queue or process invocation period to reserve.
+        if native_instances.contains(&consumer.instance) {
+            continue;
+        }
         let consumer_instance = consumer.instance.as_str();
         let consumer_port = consumer.endpoint.as_str();
         let consumer_artifact = artifacts
@@ -62,33 +67,6 @@ pub(super) fn validate_controlled_capacity(
         for source in sources {
             let source_instance = source.instance.as_str();
             let source_port = source.endpoint.as_str();
-            if source_instance == "supervisor"
-                && let Some(program) = scenario_program
-            {
-                let maximum = program
-                    .steps()
-                    .iter()
-                    .filter_map(|step| match &step.action {
-                        ScenarioAction::Setpoint {
-                            consumer_signature,
-                            encoded_payload,
-                            ..
-                        } if consumer_signature.endpoint == source_port => {
-                            u64::try_from(encoded_payload.len()).ok()
-                        }
-                        ScenarioAction::Withdraw {
-                            producer_signature, ..
-                        } if producer_signature.endpoint == source_port => Some(0),
-                        _ => None,
-                    })
-                    .max()
-                    .with_context(|| {
-                        format!("scenario source `{source}` has no matching program action")
-                    })?;
-                required_items = required_items.max(1);
-                required_bytes = required_bytes.max(maximum.max(1));
-                continue;
-            }
             if let Some(provider) =
                 observation_providers.get(&(source_instance.to_owned(), source_port.to_owned()))
             {
@@ -223,7 +201,7 @@ mod tests {
             &artifacts,
             &connections,
             &BTreeMap::new(),
-            None,
+            &BTreeSet::new(),
             2_000_000,
         )
         .expect("keyed completions are bounded independently of publication cadence");

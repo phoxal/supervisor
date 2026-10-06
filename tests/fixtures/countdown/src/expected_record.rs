@@ -88,6 +88,8 @@ pub fn expected_runtime_record() -> RuntimeRecord {
         ],
         outputs: [
             vec![OutputRecord {
+                family: None,
+                family_template: None,
                 name: "finished".to_owned(),
                 port: Some("finished".to_owned()),
                 signature: Some(observation_signature(
@@ -103,6 +105,8 @@ pub fn expected_runtime_record() -> RuntimeRecord {
                 timeout_ms: None,
             }],
             vec![OutputRecord {
+                family: None,
+                family_template: None,
                 name: "status".to_owned(),
                 port: Some("status".to_owned()),
                 signature: Some(observation_signature(
