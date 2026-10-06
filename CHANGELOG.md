@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/phoxal/supervisor/compare/phoxal-supervisor-v0.1.0...phoxal-supervisor-v0.2.0) - 2026-10-06
+
+### Added
+
+- [**breaking**] preserve authored graphs and admit public leased inputs
+
+### Other
+
+- *(release)* update package versions ([#1](https://github.com/phoxal/supervisor/pull/1))
+
 ## [0.1.0](https://github.com/phoxal/supervisor/releases/tag/phoxal-supervisor-v0.1.0) - 2026-10-04
 
 ### Added
