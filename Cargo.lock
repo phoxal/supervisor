@@ -2040,9 +2040,9 @@ dependencies = [
 
 [[package]]
 name = "phoxal"
-version = "0.71.0"
+version = "0.72.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03897e8b7b62e6ea6b884cad2fffdecfb18894c7eae167efa44f8b1d51dafd56"
+checksum = "20075a155cf4aa197bfc8e0f27d03d2377fed83cdcb1da36003c1265ab19c101"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
