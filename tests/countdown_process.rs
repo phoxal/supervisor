@@ -69,6 +69,8 @@ const CANCELLATION_STABILITY_WINDOW: Duration = Duration::from_millis(1_500);
 async fn an_authored_countdown_runtime_serves_real_transport_traffic() {
     let bundle = build_bundle();
     let root = bundle.root.canonicalize().expect("bundle root resolves");
+    // Controlled-simulation lease evidence must not be touched by hardware transport.
+    fs::create_dir(root.join("controlled-lease.marker")).expect("block unrelated marker I/O");
     let socket = support::execution_dir(&root).join("supervisor.sock");
     let endpoint = format!("unixsock-stream/{}", socket.display());
 
