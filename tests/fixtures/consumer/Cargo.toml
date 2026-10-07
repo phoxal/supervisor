@@ -13,7 +13,7 @@ name = "phoxal-contract-consumer-fixture"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { "version" = "0.70.0", "default-features" = false, "features" = ["runtime"] }
+phoxal = { "version" = "0.71.0", "default-features" = false, "features" = ["runtime"] }
 serde = { "version" = "1.0.228", "features" = ["derive"] }
 
 [lints]

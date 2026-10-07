@@ -13,7 +13,7 @@ name = "countdown-authoring-fixture"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { "version" = "0.70.0", "default-features" = false, "features" = ["runtime"] }
+phoxal = { "version" = "0.71.0", "default-features" = false, "features" = ["runtime"] }
 
 [dev-dependencies]
 serde_json = { "version" = "1.0.149" }
