@@ -1196,11 +1196,8 @@ fn build_bundle() -> TestBundle {
     fs::set_permissions(&consumer_executable, fs::Permissions::from_mode(0o755))
         .expect("make the compiled brain consumer fixture executable");
     let driver = root.join("bin/native-driver");
-    fs::write(
-        &driver,
-        "#!/bin/sh\necho physical fixture must not launch >&2\nexit 73\n",
-    )
-    .expect("native driver marker");
+    fs::write(&driver, include_str!("fixtures/process/native_refusal.sh"))
+        .expect("native driver marker");
     fs::set_permissions(&driver, fs::Permissions::from_mode(0o755)).expect("driver executable");
     let native_artifact = serde_json::json!({"runtime": {
         "schema":"phoxal/artifact/v0", "record":"runtime", "config_schema":{"type":"null"},

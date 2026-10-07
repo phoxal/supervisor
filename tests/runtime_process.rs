@@ -173,8 +173,11 @@ async fn termination_cancels_admission_and_reaps_an_unresponsive_child() {
     let bundle = build_bundle();
     // Trusted executable contents may change. This child intentionally
     // never speaks the admission protocol, so shutdown must cancel the wait.
-    fs::write(bundle.root.join("bin/brain"), "#!/bin/sh\nexec sleep 120\n")
-        .expect("stage an unresponsive child");
+    fs::write(
+        bundle.root.join("bin/brain"),
+        include_str!("fixtures/process/unresponsive.sh"),
+    )
+    .expect("stage an unresponsive child");
     let endpoint = format!(
         "unixsock-stream/{}",
         support::execution_dir(&bundle.root)

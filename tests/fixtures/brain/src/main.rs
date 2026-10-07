@@ -99,7 +99,10 @@ impl Brain {
     #[step]
     fn advance(&mut self, ctx: &mut Context<'_, Self>) -> Result<()> {
         if let Some(marker) = LEASE_MARKER.get() {
-            let value = ctx.target().valid().map_or("absent".to_owned(), |value| value.handled_count.to_string());
+            let value = ctx
+                .target()
+                .valid()
+                .map_or("absent".to_owned(), |value| value.handled_count.to_string());
             std::fs::write(marker, value)?;
         }
         self.mission.tick(ctx)
@@ -140,7 +143,13 @@ impl Brain {
 
 fn main() -> Result<()> {
     let launch = phoxal::runtime::RuntimeLaunch::parse()?;
-    LEASE_MARKER.set(launch.bundle_root.join("controlled-lease.marker")).ok();
+    // Only the controlled process fixture consumes this filesystem evidence.
+    // Hardware transport acceptance keeps host I/O out of each timed invocation.
+    if launch.simulation_context.is_some() {
+        LEASE_MARKER
+            .set(launch.bundle_root.join("controlled-lease.marker"))
+            .ok();
+    }
     phoxal::runtime::run::<Brain>()
 }
 

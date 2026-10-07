@@ -185,7 +185,11 @@ mod tests {
     async fn stopping_a_started_runtime_terminates_and_joins_it() {
         let temp = tempdir().expect("temporary process bundle");
         let script = temp.path().join("brain");
-        fs::write(&script, "#!/bin/sh\nsleep 30\n").expect("write process fixture");
+        fs::write(
+            &script,
+            include_str!("../../tests/fixtures/process/ready.sh"),
+        )
+        .expect("write process fixture");
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
             .expect("make process fixture executable");
         let bundle = RuntimeBundle::for_test(
@@ -200,7 +204,13 @@ mod tests {
         )
         .await
         .expect("the process fixture launches");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !temp.path().join("child-ready").is_file() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the owned child acknowledges readiness");
         processes
             .stop()
             .await
