@@ -13,10 +13,10 @@ name = "supervisor-test-runtime"
 path = "src/main.rs"
 
 [build-dependencies]
-phoxal = { "version" = "0.71.0", "default-features" = false, "features" = ["build"] }
+phoxal = { "version" = "0.72.0", "default-features" = false, "features" = ["build"] }
 
 [dependencies]
-phoxal = { "version" = "0.71.0", "default-features" = false, "features" = ["runtime"] }
+phoxal = { "version" = "0.72.0", "default-features" = false, "features" = ["runtime"] }
 
 [lints]
 
