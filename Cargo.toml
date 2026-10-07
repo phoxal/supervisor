@@ -16,7 +16,7 @@ name = "phoxal-supervisor"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { "version" = "0.70.0", "default-features" = false, "features" = ["runtime", "scenario", "session"] }
+phoxal = { "version" = "0.71.0", "default-features" = false, "features" = ["runtime", "scenario", "session"] }
 anyhow = { "version" = "1.0.102" }
 getrandom = { "version" = "0.3.4" }
 clap = { "version" = "4.6.1", "features" = ["derive", "env"] }

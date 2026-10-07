@@ -290,6 +290,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "cargo-config2"
+version = "0.1.45"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "855d1b74d8faf6c56e02ddbb8a60f6eae479bba5ee6ee29cddee73fe9484f261"
+dependencies = [
+ "serde",
+ "serde_derive",
+ "toml",
+]
+
+[[package]]
 name = "cc"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1991,9 +2002,9 @@ dependencies = [
 
 [[package]]
 name = "phoxal"
-version = "0.69.0"
+version = "0.71.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71094e3693e0ff18b3fb4fd4cad78055383dc7a881f1639b300a65cbaf1405c3"
+checksum = "03897e8b7b62e6ea6b884cad2fffdecfb18894c7eae167efa44f8b1d51dafd56"
 dependencies = [
  "anyhow",
  "clap",
@@ -2017,10 +2028,11 @@ dependencies = [
 
 [[package]]
 name = "phoxal-build"
-version = "0.69.0"
+version = "0.71.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20b5ba633b09e7a23e11c7948d5e667eacefa7c1f660e2d2ec38ef915f004c85"
+checksum = "e9281c15bc04dd2f8b66858961a599181733d778d1bd182e8f387cf2d102b3f0"
 dependencies = [
+ "cargo-config2",
  "fs4",
  "heck",
  "prettyplease",
@@ -2046,9 +2058,9 @@ dependencies = [
 
 [[package]]
 name = "phoxal-macros"
-version = "0.69.0"
+version = "0.71.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "040259fceccf7c80334d3827b2730481bf9c09a2c1b46e6b79e3aeb896fbd214"
+checksum = "94eb4c27970b430cb7d85d7ea350ba0d2a496f00ad4ed8310d42128a03237796"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -2827,6 +2839,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_spanned"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "serde_with"
 version = "3.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3334,6 +3355,19 @@ dependencies = [
  "futures-util",
  "pin-project-lite",
  "tokio",
+]
+
+[[package]]
+name = "toml"
+version = "1.1.6+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "920602543f0911ab71da12c50d59701da54c196d1a2bf5cb4b75667f137a406a"
+dependencies = [
+ "serde_core",
+ "serde_spanned",
+ "toml_datetime",
+ "toml_parser",
+ "winnow",
 ]
 
 [[package]]

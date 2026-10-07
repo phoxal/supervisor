@@ -3,21 +3,27 @@ robot:
   id: contract-robot
 services:
   consumer:
-    source: { path: ../consumer }
+    source:
+      path: ../consumer
+    bindings:
+      encoder:
+      - backup_source.encoder
+      ticks:
+      - encoder_source.ticks
+      read_encoder:
+      - encoder_source.read_encoder
+      read_backup:
+      - backup_source.measure_encoder
   encoder_source:
-    source: { path: ../encoder-a }
+    source:
+      path: ../encoder-a
   backup_source:
-    source: { path: ../encoder-b }
-connections:
-  - from: consumer.inspect
-    to: brain.inspect
-  - from: backup_source.encoder
-    to: consumer.encoder
-  - from: encoder_source.ticks
-    to: consumer.ticks
-  - from: encoder_source.read_encoder
-    to: consumer.read_encoder
-  - from: backup_source.measure_encoder
-    to: consumer.read_backup
+    source:
+      path: ../encoder-b
 supervisor:
-  source: { path: ../../.. }
+  source:
+    path: ../../..
+brain:
+  bindings:
+    inspect:
+    - consumer.inspect
